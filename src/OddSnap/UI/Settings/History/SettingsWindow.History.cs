@@ -70,6 +70,7 @@ public partial class SettingsWindow
     private WrapPanel? _historyVirtualizedPanel;
     private readonly Dictionary<OcrHistoryEntry, string> _ocrSearchTextCache = new();
     private readonly Dictionary<ColorHistoryEntry, string> _colorSearchTextCache = new();
+    private readonly Dictionary<CodeHistoryEntry, string> _codeSearchTextCache = new();
 
     private bool ShouldUseVirtualizedImageHistory(IReadOnlyCollection<HistoryItemVM> items)
         => items.Count >= HistoryVirtualizationThreshold;
@@ -333,9 +334,10 @@ public partial class SettingsWindow
         }
 
         HistoryStack.Children.Clear();
-        _historyItems = _filteredHistoryItems.Take(_historyRenderCount).ToList();
+        _historyItems = _filteredHistoryItems.GetRange(0, _historyRenderCount);
         AppendGroupedHistoryItems(HistoryStack, _historyItems, CreateHistoryCard);
-        PrimeHistoryThumbnailLoads(_historyItems.Concat(_allHistoryItems.Skip(_historyRenderCount).Take(HistoryLookaheadCount)));
+        var renderLookahead = Math.Min(HistoryLookaheadCount, _allHistoryItems.Count - _historyRenderCount);
+        PrimeHistoryThumbnailLoads(_historyItems, _allHistoryItems, _historyRenderCount, Math.Max(0, renderLookahead));
         sw.Stop();
         AppDiagnostics.LogInfo(
             "history.render-images",
@@ -353,17 +355,16 @@ public partial class SettingsWindow
         _historyRenderCount = Math.Min(_historyRenderCount + ImageHistoryPageSize, _allImageHistoryEntries.Count);
         EnsureMaterializedImageHistoryItems(_historyRenderCount);
 
-        var appended = _allHistoryItems
-            .Skip(previousCount)
-            .Take(_historyRenderCount - previousCount)
-            .ToList();
-        if (appended.Count == 0)
+        var appendCount = _historyRenderCount - previousCount;
+        if (appendCount <= 0)
             return;
+        var appended = _allHistoryItems.GetRange(previousCount, appendCount);
 
         _filteredHistoryItems.AddRange(appended);
         _historyItems.AddRange(appended);
         AppendGroupedHistoryItems(HistoryStack, appended, CreateHistoryCard);
-        PrimeHistoryThumbnailLoads(appended.Concat(_allHistoryItems.Skip(_historyRenderCount).Take(HistoryLookaheadCount)));
+        var lookaheadCount = Math.Min(HistoryLookaheadCount, _allHistoryItems.Count - _historyRenderCount);
+        PrimeHistoryThumbnailLoads(appended, _allHistoryItems, _historyRenderCount, Math.Max(0, lookaheadCount));
         UpdateLoadedImageHistoryCountText();
 
         _ = Dispatcher.BeginInvoke(() =>
@@ -461,17 +462,15 @@ public partial class SettingsWindow
         _historyTopSpacer.Height = startRow * HistoryVirtualRowHeight;
         _historyBottomSpacer.Height = Math.Max(0, (totalRows - endRowExclusive) * HistoryVirtualRowHeight);
 
-        var visibleItems = _filteredHistoryItems.Skip(startIndex).Take(endIndex - startIndex).ToList();
+        var visibleCount = endIndex - startIndex;
+        var visibleItems = _filteredHistoryItems.GetRange(startIndex, visibleCount);
         _historyItems = visibleItems;
         _historyVirtualizedPanel.Children.Clear();
-        foreach (var item in visibleItems)
-            _historyVirtualizedPanel.Children.Add(GetOrCreateHistoryCard(item));
+        for (int i = 0; i < visibleItems.Count; i++)
+            _historyVirtualizedPanel.Children.Add(GetOrCreateHistoryCard(visibleItems[i]));
 
-        var prefetchItems = visibleItems
-            .Concat(_filteredHistoryItems.Skip(endIndex).Take(columns * HistoryPrefetchRowBuffer))
-            .DistinctBy(item => item.Entry.FilePath)
-            .ToList();
-        PrimeHistoryThumbnailLoads(prefetchItems);
+        var prefetchAfter = Math.Min(columns * HistoryPrefetchRowBuffer, _filteredHistoryItems.Count - endIndex);
+        PrimeHistoryThumbnailLoads(visibleItems, _filteredHistoryItems, endIndex, Math.Max(0, prefetchAfter));
     }
 
     private static void PrimeHistoryThumbnailLoads(IEnumerable<HistoryItemVM> items)
@@ -481,6 +480,51 @@ public partial class SettingsWindow
         {
             if (queued >= HistoryPrefetchLimit)
                 break;
+
+            if (item.ThumbnailLoaded && item.ThumbnailSource != null)
+                continue;
+
+            queued++;
+            PrimeThumbLoad(item);
+        }
+    }
+
+    private static void PrimeHistoryThumbnailLoads(
+        IReadOnlyList<HistoryItemVM> primary,
+        IReadOnlyList<HistoryItemVM> secondary,
+        int secondaryStart,
+        int secondaryCount)
+    {
+        int queued = 0;
+        var seen = secondaryCount > 0 ? new HashSet<string>(StringComparer.OrdinalIgnoreCase) : null;
+
+        for (int i = 0; i < primary.Count; i++)
+        {
+            if (queued >= HistoryPrefetchLimit)
+                return;
+
+            var item = primary[i];
+            seen?.Add(item.Entry.FilePath);
+
+            if (item.ThumbnailLoaded && item.ThumbnailSource != null)
+                continue;
+
+            queued++;
+            PrimeThumbLoad(item);
+        }
+
+        if (seen is null || secondaryCount <= 0)
+            return;
+
+        var end = secondaryStart + secondaryCount;
+        for (int i = secondaryStart; i < end; i++)
+        {
+            if (queued >= HistoryPrefetchLimit)
+                return;
+
+            var item = secondary[i];
+            if (!seen.Add(item.Entry.FilePath))
+                continue;
 
             if (item.ThumbnailLoaded && item.ThumbnailSource != null)
                 continue;
@@ -671,6 +715,7 @@ public partial class SettingsWindow
         {
             1 => OcrStack.Children.OfType<Border>().Where(IsSelectableHistoryCard),
             3 => ColorStack.Children.OfType<Border>().Where(IsSelectableHistoryCard),
+            5 => CodeStack.Children.OfType<Border>().Where(IsSelectableHistoryCard),
             _ => Enumerable.Empty<Border>()
         };
     }
@@ -686,6 +731,8 @@ public partial class SettingsWindow
         if (HistoryCategoryCombo.SelectedIndex == 1)
             card.Tag = false;
         else if (HistoryCategoryCombo.SelectedIndex == 3)
+            card.Tag = null;
+        else if (HistoryCategoryCombo.SelectedIndex == 5)
             card.Tag = null;
 
         RefreshSelectableCardSelection(card);
@@ -704,6 +751,7 @@ public partial class SettingsWindow
         {
             1 => card.Tag is true,
             3 => card.Tag is ColorHistoryEntry,
+            5 => card.Tag is CodeHistoryEntry,
             _ => false
         };
 
@@ -715,10 +763,16 @@ public partial class SettingsWindow
         try
         {
             CancelImageSearchWork();
-            string tab = HistoryCategoryCombo.SelectedIndex == 0 ? "images"
-                : HistoryCategoryCombo.SelectedIndex == 2 ? "videos/GIFs"
-                : HistoryCategoryCombo.SelectedIndex == 1 ? "text history"
-                : HistoryCategoryCombo.SelectedIndex == 3 ? "colors" : "stickers";
+            string tab = HistoryCategoryCombo.SelectedIndex switch
+            {
+                0 => "images",
+                1 => "text history",
+                2 => "videos/GIFs",
+                3 => "colors",
+                4 => "stickers",
+                5 => "QR/barcode history",
+                _ => "items"
+            };
             if (!ThemedConfirmDialog.Confirm(this, "Confirm 1/3", $"Delete all {tab}?", "Delete", "Cancel")) return;
             if (!ThemedConfirmDialog.Confirm(this, "Confirm 2/3", $"Really delete all {tab}?", "Delete", "Cancel")) return;
             if (!ThemedConfirmDialog.Confirm(this, "Confirm 3/3", $"This cannot be undone. Delete all {tab}?", "Delete", "Cancel")) return;
@@ -727,6 +781,7 @@ public partial class SettingsWindow
             else if (HistoryCategoryCombo.SelectedIndex == 2) DeleteMediaItems(_allGifItems);
             else if (HistoryCategoryCombo.SelectedIndex == 1) _historyService.ClearOcr();
             else if (HistoryCategoryCombo.SelectedIndex == 3) _historyService.ClearColors();
+            else if (HistoryCategoryCombo.SelectedIndex == 5) _historyService.ClearCodes();
             else _historyService.ClearStickers();
 
             _selectMode = false;
@@ -779,6 +834,12 @@ public partial class SettingsWindow
             {
                 var toDelete = _stickerItems.Where(i => i.IsSelected).Select(i => i.Entry).ToList();
                 _historyService.DeleteEntries(toDelete);
+            }
+            else if (HistoryCategoryCombo.SelectedIndex == 5)
+            {
+                var toDelete = CodeStack.Children.OfType<Border>()
+                    .Select(s => s.Tag).OfType<CodeHistoryEntry>().ToList();
+                _historyService.DeleteCodeEntries(toDelete);
             }
 
             LoadCurrentHistoryTab();
@@ -874,13 +935,15 @@ public partial class SettingsWindow
         var previousOffset = StickersPanel.VerticalOffset;
         var previousCount = _stickerRenderCount;
         _stickerRenderCount = Math.Min(_stickerRenderCount + HistoryAppendPageSize, _filteredStickerItems.Count);
-        var appended = _filteredStickerItems.Skip(previousCount).Take(_stickerRenderCount - previousCount).ToList();
-        if (appended.Count == 0)
+        var appendCount = _stickerRenderCount - previousCount;
+        if (appendCount <= 0)
             return;
+        var appended = _filteredStickerItems.GetRange(previousCount, appendCount);
 
         _stickerItems.AddRange(appended);
         AppendGroupedHistoryItems(StickerStack, appended, CreateHistoryCard);
-        PrimeHistoryThumbnailLoads(appended.Concat(_filteredStickerItems.Skip(_stickerRenderCount).Take(HistoryLookaheadCount)));
+        var lookahead = Math.Min(HistoryLookaheadCount, _filteredStickerItems.Count - _stickerRenderCount);
+        PrimeHistoryThumbnailLoads(appended, _filteredStickerItems, _stickerRenderCount, Math.Max(0, lookahead));
 
         _ = Dispatcher.BeginInvoke(() =>
         {
@@ -963,9 +1026,9 @@ public partial class SettingsWindow
         else
             targetWidth = Math.Max(0, availableWidth - HistoryCardHorizontalGap);
 
-        foreach (var card in wrap.Children.OfType<Border>())
+        for (int i = 0; i < wrap.Children.Count; i++)
         {
-            if (card.Tag is not HistoryItemVM)
+            if (wrap.Children[i] is not Border card || card.Tag is not HistoryItemVM)
                 continue;
 
             if (Math.Abs(card.Width - targetWidth) > 0.5)

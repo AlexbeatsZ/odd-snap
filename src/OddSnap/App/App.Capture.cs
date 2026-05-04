@@ -375,6 +375,7 @@ public partial class App
                             if (decoded is not null)
                             {
                                 ClipboardService.CopyTextToClipboard(decoded.Text);
+                                _historyService?.SaveCodeEntry(decoded.Text, decoded.Format.ToString());
                                 var prev = decoded.Text.Length > 100 ? decoded.Text[..100] + "..." : decoded.Text;
                                 var preview = BarcodeService.RenderPreview(decoded.Text, decoded.Format);
                                 var title = decoded.Format == ZXing.BarcodeFormat.QR_CODE ? "QR Code copied" : "Barcode copied";

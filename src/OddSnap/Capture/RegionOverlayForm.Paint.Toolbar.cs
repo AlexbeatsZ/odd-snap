@@ -15,6 +15,21 @@ namespace OddSnap.Capture;
 
 public sealed partial class RegionOverlayForm
 {
+    private static Pen? _swatchSelectionPen;
+    private static int _swatchSelectionPenKey;
+
+    private static Pen GetSwatchSelectionPen()
+    {
+        int key = UiChrome.SurfaceTextPrimary.ToArgb();
+        if (_swatchSelectionPen is null || _swatchSelectionPenKey != key)
+        {
+            _swatchSelectionPen?.Dispose();
+            _swatchSelectionPen = new Pen(UiChrome.SurfaceTextPrimary, 2f);
+            _swatchSelectionPenKey = key;
+        }
+        return _swatchSelectionPen;
+    }
+
     private void PaintToolbar(Graphics g)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -62,8 +77,7 @@ public sealed partial class RegionOverlayForm
                 float dx = btn.X + (btn.Width - dotSize) / 2f;
                 float dy = btn.Y + (btn.Height - dotSize) / 2f;
                 int colorAlpha = active ? 255 : hover ? 230 : 175;
-                using var cBrush = new SolidBrush(Color.FromArgb(colorAlpha, _toolColor.R, _toolColor.G, _toolColor.B));
-                g.FillEllipse(cBrush, dx, dy, dotSize, dotSize);
+                g.FillEllipse(SketchRenderer.GetToolColorBrush(Color.FromArgb(colorAlpha, _toolColor.R, _toolColor.G, _toolColor.B)), dx, dy, dotSize, dotSize);
                 continue;
             }
 
@@ -126,13 +140,9 @@ public sealed partial class RegionOverlayForm
         for (int i = 0; i < ToolColors.Length && i < ColorPickerColumns * ColorPickerRows; i++)
         {
             var swatchRect = GetColorPickerSwatchRect(i);
-            using var brush = new SolidBrush(ToolColors[i]);
-            g.FillEllipse(brush, swatchRect);
+            g.FillEllipse(SketchRenderer.GetToolColorBrush(ToolColors[i]), swatchRect);
             if (ToolColors[i] == _toolColor)
-            {
-                using var selPen = new Pen(UiChrome.SurfaceTextPrimary, 2f);
-                g.DrawEllipse(selPen, swatchRect);
-            }
+                g.DrawEllipse(GetSwatchSelectionPen(), swatchRect);
         }
         g.SmoothingMode = SmoothingMode.Default;
     }

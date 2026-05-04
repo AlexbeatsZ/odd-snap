@@ -398,10 +398,9 @@ public partial class SettingsWindow
             _selectMode = false;
             SelectBtn.Content = "Select";
             DeleteSelectedBtn.Visibility = Visibility.Collapsed;
-            _ocrSearchSurface = null;
-            _colorSearchSurface = null;
             _ocrSearchQuery = "";
             _colorSearchQuery = "";
+            _codeSearchQuery = "";
             _imageSearchQuery = "";
             if (ImageSearchBox != null) ImageSearchBox.Text = "";
         }
@@ -411,6 +410,7 @@ public partial class SettingsWindow
         TextPanel.Visibility = Visibility.Collapsed;
         ColorsPanel.Visibility = Visibility.Collapsed;
         StickersPanel.Visibility = Visibility.Collapsed;
+        CodesPanel.Visibility = Visibility.Collapsed;
         UpdateImageSearchUi();
         UpdateHistoryUploadFilterUi();
 
@@ -430,6 +430,7 @@ public partial class SettingsWindow
             case 2: GifsPanel.Visibility = Visibility.Visible; LoadMediaHistory(); break;
             case 3: ColorsPanel.Visibility = Visibility.Visible; LoadColorHistory(); break;
             case 4: StickersPanel.Visibility = Visibility.Visible; LoadStickerHistory(); break;
+            case 5: CodesPanel.Visibility = Visibility.Visible; LoadCodeHistory(); break;
         }
 
         UpdateHistoryMonitorState();

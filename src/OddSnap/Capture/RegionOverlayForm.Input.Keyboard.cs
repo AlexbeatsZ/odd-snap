@@ -89,6 +89,10 @@ public sealed partial class RegionOverlayForm
             _redoStack.Clear();
             MarkCommittedAnnotationsDirty();
             _selectedAnnotationIndex = -1;
+            _selectPreviewAnnotation = null;
+            _renderSkipIndex = -1;
+            _isSelectDragging = false;
+            _isSelectResizing = false;
             Invalidate(bounds);
             return;
         }

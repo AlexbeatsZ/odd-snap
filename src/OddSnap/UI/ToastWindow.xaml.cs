@@ -371,6 +371,7 @@ public partial class ToastWindow : Window
         ApplyToastOverlayButtonVisual(OfficeBtn, OfficeIcon, "copy", active: false);
         ApplyAiRedirectOverlayButtonVisual(AiRedirectBtn, AiRedirectIcon, active: false);
         ApplyToastOverlayButtonVisual(DeleteBtn, DeleteIcon, "trash", active: false);
+        ApplyTextCloseVisual(active: false);
 
         HookOverlayHover(CloseBtn, CloseIcon, "close");
         HookOverlayHover(PinBtn, PinIcon, "pin");
@@ -378,6 +379,20 @@ public partial class ToastWindow : Window
         HookOverlayHover(OfficeBtn, OfficeIcon, "copy");
         HookAiRedirectHover(AiRedirectBtn, AiRedirectIcon);
         HookOverlayHover(DeleteBtn, DeleteIcon, "trash");
+        TextCloseBtn.MouseEnter += (_, _) => ApplyTextCloseVisual(active: true);
+        TextCloseBtn.MouseLeave += (_, _) => ApplyTextCloseVisual(active: false);
+    }
+
+    private void ApplyTextCloseVisual(bool active)
+    {
+        var iconColor = Theme.IsDark
+            ? System.Drawing.Color.FromArgb(active ? 255 : 200, 255, 255, 255)
+            : System.Drawing.Color.FromArgb(active ? 255 : 180, 24, 24, 24);
+        TextCloseIcon.Source = FluentIcons.RenderWpf("close", iconColor, 14);
+        TextCloseIcon.Opacity = active ? 1.0 : 0.78;
+        TextCloseBtn.Background = active
+            ? Theme.Brush(Theme.IsDark ? Color.FromArgb(48, 255, 255, 255) : Color.FromArgb(38, 0, 0, 0))
+            : System.Windows.Media.Brushes.Transparent;
     }
 
     private void HookOverlayHover(System.Windows.Controls.Border btn, System.Windows.Controls.Image icon, string iconId)
@@ -415,8 +430,12 @@ public partial class ToastWindow : Window
         OfficeBtn.MouseLeftButtonDown -= OfficeBtn_MouseLeftButtonDown;
         AiRedirectBtn.MouseLeftButtonDown -= AiRedirectBtn_MouseLeftButtonDown;
         DeleteBtn.MouseLeftButtonDown -= DeleteBtn_MouseLeftButtonDown;
+        TextCloseBtn.MouseLeftButtonDown -= CloseBtn_MouseLeftButtonDown;
 
-        if (!_spec.ShowOverlayButtons || _previewBitmap is null)
+        // Text-only toasts (no preview bitmap) always get an X — independent of ShowOverlayButtons.
+        TextCloseBtn.MouseLeftButtonDown += CloseBtn_MouseLeftButtonDown;
+
+        if (_previewBitmap is null || !_spec.ShowOverlayButtons)
             return;
 
         CloseBtn.MouseLeftButtonDown += CloseBtn_MouseLeftButtonDown;
@@ -435,6 +454,14 @@ public partial class ToastWindow : Window
         ApplyOverlayButton(OfficeBtn, Helpers.ToastButtonKind.Office);
         ApplyOverlayButton(AiRedirectBtn, Helpers.ToastButtonKind.AiRedirect);
         ApplyOverlayButton(DeleteBtn, Helpers.ToastButtonKind.Delete);
+
+        // Every text-only toast gets an X — Scan/Error/Color/Standard alike.
+        bool textCloseVisible = _previewBitmap is null &&
+                                Helpers.ToastButtonLayout.IsVisible(_buttonLayout, Helpers.ToastButtonKind.Close) &&
+                                TextContentPanel.Visibility == Visibility.Visible;
+        TextCloseBtn.Visibility = textCloseVisible ? Visibility.Visible : Visibility.Collapsed;
+        if (textCloseVisible)
+            ApplyTextCloseVisual(active: false);
     }
 
     private void ApplyOverlayButton(System.Windows.Controls.Border button, Helpers.ToastButtonKind kind)

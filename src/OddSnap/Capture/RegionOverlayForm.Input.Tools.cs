@@ -357,7 +357,7 @@ public sealed partial class RegionOverlayForm
                 InvalidateLivePreview(RectFromPoints(_lineStart, oldCursor, 1), RectFromPoints(_lineStart, e.Location, 1), 18);
                 break;
             case CaptureMode.Ruler when _isRulerDragging:
-                InvalidateLivePreview(RectFromPoints(_rulerStart, GetRulerEnd(oldCursor), 1), RectFromPoints(_rulerStart, GetRulerEnd(e.Location), 1), 56);
+                InvalidateLivePreview(GetRulerPaintBounds(_rulerStart, GetRulerEnd(oldCursor)), GetRulerPaintBounds(_rulerStart, GetRulerEnd(e.Location)), 0);
                 break;
             case CaptureMode.Arrow when _isArrowDragging:
                 InvalidateLivePreview(RectFromPoints(_arrowStart, oldCursor, 1), RectFromPoints(_arrowStart, e.Location, 1), 32);
@@ -461,12 +461,24 @@ public sealed partial class RegionOverlayForm
         var oldDirty = InflateForRepaint(oldBounds, pad);
         var newDirty = InflateForRepaint(newBounds, pad);
 
-        if (!oldDirty.IsEmpty && !newDirty.IsEmpty)
-            Invalidate(Rectangle.Union(oldDirty, newDirty));
-        else if (!oldDirty.IsEmpty)
-            Invalidate(oldDirty);
-        else if (!newDirty.IsEmpty)
-            Invalidate(newDirty);
+        // Smear-proofing: always re-invalidate whatever the previous frame painted,
+        // so any pixels a tool drew outside its declared bounds still get cleared.
+        var prevPaint = _lastLivePreviewPaintExtent;
+        _lastLivePreviewPaintExtent = Rectangle.Empty;
+
+        Rectangle union = Rectangle.Empty;
+        static Rectangle Add(Rectangle u, Rectangle r)
+        {
+            if (r.Width <= 0 || r.Height <= 0) return u;
+            if (u.Width <= 0 || u.Height <= 0) return r;
+            return Rectangle.Union(u, r);
+        }
+        union = Add(union, oldDirty);
+        union = Add(union, newDirty);
+        union = Add(union, prevPaint);
+
+        if (union.Width > 0 && union.Height > 0)
+            Invalidate(union);
     }
 
     private Rectangle GetDrawPreviewBounds()
@@ -562,7 +574,8 @@ public sealed partial class RegionOverlayForm
                 float rdy = rulerEnd.Y - _rulerStart.Y;
                 if (MathF.Sqrt(rdx * rdx + rdy * rdy) > 3)
                     AddAnnotation(new RulerAnnotation(_rulerStart, rulerEnd));
-                Invalidate(InflateForRepaint(RectFromPoints(_rulerStart, rulerEnd, 1)));
+                Invalidate(Rectangle.Union(GetRulerPaintBounds(_rulerStart, rulerEnd), _lastLivePreviewPaintExtent.Width > 0 ? _lastLivePreviewPaintExtent : GetRulerPaintBounds(_rulerStart, rulerEnd)));
+                _lastLivePreviewPaintExtent = Rectangle.Empty;
                 break;
             case CaptureMode.Arrow when _isArrowDragging:
                 _isArrowDragging = false;

@@ -153,9 +153,10 @@ public partial class SettingsWindow
         var previousOffset = GifsPanel.VerticalOffset;
         var previousCount = _gifRenderCount;
         _gifRenderCount = Math.Min(_gifRenderCount + HistoryAppendPageSize, _filteredGifItems.Count);
-        var appended = _filteredGifItems.Skip(previousCount).Take(_gifRenderCount - previousCount).ToList();
-        if (appended.Count == 0)
+        var appendCount = _gifRenderCount - previousCount;
+        if (appendCount <= 0)
             return;
+        var appended = _filteredGifItems.GetRange(previousCount, appendCount);
 
         _gifItems.AddRange(appended);
         AppendGroupedHistoryItems(GifStack, appended, CreateMediaCard);

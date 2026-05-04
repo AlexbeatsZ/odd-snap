@@ -47,11 +47,13 @@ public sealed class HistoryStoreTests
                 entries,
                 [new OcrHistoryEntry { Text = "hello", CapturedAt = entries[0].CapturedAt }],
                 [new ColorHistoryEntry { Hex = "#ffffff", CapturedAt = entries[0].CapturedAt }],
+                [],
                 EntriesRewritePending: true,
                 PendingEntryUpserts: new Dictionary<string, HistoryEntry>(),
                 PendingEntryDeletes: [],
                 OcrDirty: true,
-                ColorDirty: true));
+                ColorDirty: true,
+                CodeDirty: false));
 
             Assert.True(result.EntriesRewriteCommitted);
             Assert.True(result.OcrCommitted);

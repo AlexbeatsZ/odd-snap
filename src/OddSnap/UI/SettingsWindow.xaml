@@ -2130,7 +2130,7 @@
             </ScrollViewer>
 
             <!-- History (merged: Screenshots + Text sub-tabs) -->
-            <Grid x:Name="HistoryPanel" Visibility="Collapsed" Margin="32,52,32,24">
+            <Grid x:Name="HistoryPanel" Visibility="Collapsed" Margin="32,52,32,12">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
@@ -2138,7 +2138,7 @@
                 </Grid.RowDefinitions>
 
                 <!-- Category dropdown + actions -->
-                <Border Grid.Row="0" Padding="0,0,0,8">
+                <Border Grid.Row="0" Padding="0,0,0,6">
                     <StackPanel>
                         <DockPanel>
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
@@ -2149,24 +2149,28 @@
                                 <Button x:Name="DeleteSelectedBtn" Content="Delete selected" Style="{StaticResource HistoryDangerButton}"
                                          Margin="6,0,0,0" Visibility="Collapsed" Click="DeleteSelectedClick"/>
                             </StackPanel>
-                            <ComboBox x:Name="HistoryCategoryCombo" FontSize="12" Padding="8,5" MinWidth="130" Margin="0,0,8,0"
-                                      VerticalAlignment="Center" SelectionChanged="HistoryCategoryCombo_Changed"
+                            <ComboBox x:Name="HistoryCategoryCombo" FontSize="12.5" Padding="10,5"
+                                      MinWidth="130" Margin="0,0,8,0" VerticalAlignment="Center"
+                                      SelectionChanged="HistoryCategoryCombo_Changed"
                                       PreviewMouseLeftButtonDown="HistoryCategoryCombo_PreviewMouseLeftButtonDown">
                                 <ComboBoxItem Content="Images" IsSelected="True"/>
                                 <ComboBoxItem Content="Text"/>
                                 <ComboBoxItem Content="Videos/GIFs"/>
                                 <ComboBoxItem Content="Colors"/>
                                 <ComboBoxItem Content="Stickers"/>
+                                <ComboBoxItem Content="Codes"/>
                             </ComboBox>
-                            <ComboBox x:Name="HistoryUploadFilterCombo" FontSize="12" Padding="8,5" MinWidth="128" Margin="0,0,8,0"
-                                      VerticalAlignment="Center" SelectionChanged="HistoryUploadFilterCombo_Changed">
+                            <ComboBox x:Name="HistoryUploadFilterCombo" FontSize="12.5" Padding="10,5"
+                                      MinWidth="128" Margin="0,0,8,0" VerticalAlignment="Center"
+                                      SelectionChanged="HistoryUploadFilterCombo_Changed">
                                 <ComboBoxItem Content="All uploads" Tag="All" IsSelected="True"/>
                                 <ComboBoxItem Content="Uploaded" Tag="Uploaded"/>
                                 <ComboBoxItem Content="Not uploaded" Tag="NotUploaded"/>
                                 <ComboBoxItem Content="Failed" Tag="Failed"/>
                             </ComboBox>
-                            <ComboBox x:Name="HistoryUploadProviderCombo" FontSize="12" Padding="8,5" MinWidth="138" Margin="0,0,8,0"
-                                      VerticalAlignment="Center" SelectionChanged="HistoryUploadProviderCombo_Changed"/>
+                            <ComboBox x:Name="HistoryUploadProviderCombo" FontSize="12.5" Padding="10,5"
+                                      MinWidth="138" Margin="0,0,8,0" VerticalAlignment="Center"
+                                      SelectionChanged="HistoryUploadProviderCombo_Changed"/>
                         </DockPanel>
 
                         <Grid x:Name="ImageSearchRow" Margin="0,8,0,0" Visibility="Visible">
@@ -2263,6 +2267,13 @@
                               Padding="10,2,10,4" Visibility="Collapsed"
                               ScrollChanged="StickerPanel_ScrollChanged">
                     <StackPanel x:Name="StickerStack"/>
+                </ScrollViewer>
+
+                <!-- Code/QR history -->
+                <ScrollViewer x:Name="CodesPanel" Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                              Padding="10,2,10,14" Visibility="Collapsed"
+                              ScrollChanged="CodesPanel_ScrollChanged">
+                    <StackPanel x:Name="CodeStack"/>
                 </ScrollViewer>
 
                 <!-- Empty states -->

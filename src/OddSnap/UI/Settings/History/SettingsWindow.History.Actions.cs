@@ -75,6 +75,12 @@ public partial class SettingsWindow
             return;
         }
 
+        if (HistoryCategoryCombo.SelectedIndex == 5)
+        {
+            ImageSearchPlaceholder.Text = "Search QR/barcode text, links, or formats";
+            return;
+        }
+
         var isIndexing = _imageSearchIndexService.StatusText.StartsWith("Indexing screenshots", StringComparison.OrdinalIgnoreCase);
         ImageSearchPlaceholder.Text = isIndexing
             ? "Search screenshots (indexing...)"
@@ -217,6 +223,17 @@ public partial class SettingsWindow
                 _colorSearchDebounceTimer.Tick += FlushColorSearchDebounce;
                 _colorSearchDebounceTimer.Start();
             }
+            else if (HistoryCategoryCombo.SelectedIndex == 5)
+            {
+                _codeSearchQuery = text;
+                ImageSearchPlaceholder.Visibility = string.IsNullOrWhiteSpace(_codeSearchQuery) && !ImageSearchBox.IsKeyboardFocused
+                    ? Visibility.Visible
+                    : Visibility.Collapsed;
+                _codeSearchDebounceTimer.Stop();
+                _codeSearchDebounceTimer.Tick -= FlushCodeSearchDebounce;
+                _codeSearchDebounceTimer.Tick += FlushCodeSearchDebounce;
+                _codeSearchDebounceTimer.Start();
+            }
         }
         catch (Exception ex)
         {
@@ -252,6 +269,8 @@ public partial class SettingsWindow
                 LoadOcrHistory();
             else if (HistoryCategoryCombo.SelectedIndex == 3)
                 LoadColorHistory();
+            else if (HistoryCategoryCombo.SelectedIndex == 5)
+                LoadCodeHistory();
             e.Handled = true;
         }
         catch (Exception ex)
@@ -308,9 +327,10 @@ public partial class SettingsWindow
         var previousOffset = ImagesPanel.VerticalOffset;
         var previousCount = _historyRenderCount;
         _historyRenderCount = Math.Min(_historyRenderCount + HistoryAppendPageSize, _filteredHistoryItems.Count);
-        var appended = _filteredHistoryItems.Skip(previousCount).Take(_historyRenderCount - previousCount).ToList();
-        if (appended.Count == 0)
+        var appendCount = _historyRenderCount - previousCount;
+        if (appendCount <= 0)
             return;
+        var appended = _filteredHistoryItems.GetRange(previousCount, appendCount);
 
         _historyItems.AddRange(appended);
         AppendGroupedHistoryItems(HistoryStack, appended, CreateHistoryCard);

@@ -51,6 +51,7 @@ public sealed partial class RegionOverlayForm
         {
             for (int i = 0; i < _undoStack.Count; i++)
             {
+                if (i == _renderSkipIndex) continue;
                 switch (_undoStack[i])
                 {
                     case BlurRect blur:
@@ -129,9 +130,10 @@ public sealed partial class RegionOverlayForm
     private Dictionary<int, Region> BuildHighlightRegions()
     {
         var regions = new Dictionary<int, Region>();
-        foreach (var annotation in _undoStack)
+        for (int i = 0; i < _undoStack.Count; i++)
         {
-            if (annotation is not HighlightAnnotation highlight || highlight.Rect.Width <= 0 || highlight.Rect.Height <= 0)
+            if (i == _renderSkipIndex) continue;
+            if (_undoStack[i] is not HighlightAnnotation highlight || highlight.Rect.Width <= 0 || highlight.Rect.Height <= 0)
                 continue;
 
             int colorKey = highlight.Color.ToArgb();
@@ -154,7 +156,7 @@ public sealed partial class RegionOverlayForm
         try
         {
             g.SetClip(region, CombineMode.Replace);
-            using var brush = new SolidBrush(Color.FromArgb(92, color.R, color.G, color.B));
+            var brush = SketchRenderer.GetToolColorBrush(Color.FromArgb(92, color.R, color.G, color.B));
             g.FillRegion(brush, region);
         }
         finally

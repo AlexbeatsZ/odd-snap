@@ -151,13 +151,9 @@ public sealed partial class HistoryService
         bool changed = false;
         lock (_gate)
         {
-            var missingEntries = _entries.Where(e => !File.Exists(e.FilePath)).ToList();
-            if (missingEntries.Count > 0)
-            {
-                foreach (var entry in missingEntries)
-                    _entries.Remove(entry);
+            var removed = _entries.RemoveAll(e => !File.Exists(e.FilePath));
+            if (removed > 0)
                 changed = true;
-            }
 
             var tracked = new HashSet<string>(_entries.Select(e => e.FilePath), StringComparer.OrdinalIgnoreCase);
 
@@ -263,19 +259,24 @@ public sealed partial class HistoryService
 
             if (retention == HistoryRetentionPeriod.Never) return;
 
-            foreach (var e in _entries.Where(e => e.CapturedAt < cutoff).ToList())
+            _entries.RemoveAll(e =>
             {
-                _entries.Remove(e);
+                if (e.CapturedAt >= cutoff)
+                    return false;
+
                 _entriesByPath.Remove(e.FilePath);
                 try { File.Delete(e.FilePath); } catch { }
                 TryDeleteManagedThumbnail_NoLock(e.FilePath);
-            }
+                return true;
+            });
             InvalidateFilteredCache();
             _ocrEntries.RemoveAll(e => e.CapturedAt < cutoff);
             _colorEntries.RemoveAll(e => e.CapturedAt < cutoff);
+            _codeEntries.RemoveAll(e => e.CapturedAt < cutoff);
             MarkEntriesRewrite_NoLock();
             _ocrDirty = true;
             _colorDirty = true;
+            _codeDirty = true;
             ScheduleFlush_NoLock();
         }
         NotifyChanged();
@@ -308,6 +309,15 @@ public sealed partial class HistoryService
         }
     }
 
+    private void SaveCodeIndex()
+    {
+        lock (_gate)
+        {
+            _codeDirty = true;
+            ScheduleFlush_NoLock();
+        }
+    }
+
     public void FlushPendingWrites()
     {
         lock (_gate)
@@ -319,6 +329,7 @@ public sealed partial class HistoryService
         if (!_entriesRewritePending &&
             !_ocrDirty &&
             !_colorDirty &&
+            !_codeDirty &&
             _pendingEntryUpserts.Count == 0 &&
             _pendingEntryDeletes.Count == 0)
         {
@@ -333,11 +344,13 @@ public sealed partial class HistoryService
             _entries,
             _ocrEntries,
             _colorEntries,
+            _codeEntries,
             _entriesRewritePending,
             _pendingEntryUpserts,
             _pendingEntryDeletes,
             _ocrDirty,
-            _colorDirty));
+            _colorDirty,
+            _codeDirty));
 
         if (result.EntriesRewriteCommitted)
         {
@@ -356,6 +369,9 @@ public sealed partial class HistoryService
 
         if (result.ColorCommitted)
             _colorDirty = false;
+
+        if (result.CodeCommitted)
+            _codeDirty = false;
     }
 
     private void ScheduleFlush_NoLock()
@@ -438,6 +454,7 @@ public sealed partial class HistoryService
         RebuildEntryLookup_NoLock();
         _ocrEntries = loadResult.OcrEntries;
         _colorEntries = loadResult.ColorEntries;
+        _codeEntries = loadResult.CodeEntries;
 
         foreach (var filePath in loadResult.PendingDeletes)
             QueueEntryDelete_NoLock(filePath);

@@ -7,6 +7,7 @@ internal sealed record HistoryLoadResult(
     List<HistoryEntry> Entries,
     List<OcrHistoryEntry> OcrEntries,
     List<ColorHistoryEntry> ColorEntries,
+    List<CodeHistoryEntry> CodeEntries,
     List<string> PendingDeletes,
     List<HistoryEntry> PendingUpserts);
 
@@ -14,17 +15,20 @@ internal sealed record HistoryFlushRequest(
     IReadOnlyList<HistoryEntry> Entries,
     IReadOnlyList<OcrHistoryEntry> OcrEntries,
     IReadOnlyList<ColorHistoryEntry> ColorEntries,
+    IReadOnlyList<CodeHistoryEntry> CodeEntries,
     bool EntriesRewritePending,
     IReadOnlyDictionary<string, HistoryEntry> PendingEntryUpserts,
     IReadOnlyCollection<string> PendingEntryDeletes,
     bool OcrDirty,
-    bool ColorDirty);
+    bool ColorDirty,
+    bool CodeDirty);
 
 internal sealed record HistoryFlushResult(
     bool EntriesRewriteCommitted,
     bool EntryDeltaCommitted,
     bool OcrCommitted,
-    bool ColorCommitted);
+    bool ColorCommitted,
+    bool CodeCommitted);
 
 internal static class HistoryStore
 {
@@ -65,6 +69,15 @@ internal static class HistoryStore
             );
             CREATE INDEX IF NOT EXISTS idx_color_entries_captured_at
                 ON color_entries(captured_at_ticks DESC);
+
+            CREATE TABLE IF NOT EXISTS code_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT NOT NULL,
+                format TEXT NOT NULL,
+                captured_at_ticks INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_code_entries_captured_at
+                ON code_entries(captured_at_ticks DESC);
             """;
         command.ExecuteNonQuery();
         EnsureColumn(connection, "history_entries", "upload_error", "TEXT NULL");
@@ -75,6 +88,7 @@ internal static class HistoryStore
         var entries = new List<HistoryEntry>();
         var ocrEntries = new List<OcrHistoryEntry>();
         var colorEntries = new List<ColorHistoryEntry>();
+        var codeEntries = new List<CodeHistoryEntry>();
         var pendingDeletes = new List<string>();
         var pendingUpserts = new List<HistoryEntry>();
 
@@ -166,7 +180,26 @@ internal static class HistoryStore
             }
         }
 
-        return new HistoryLoadResult(entries, ocrEntries, colorEntries, pendingDeletes, pendingUpserts);
+        using (var codeCommand = connection.CreateCommand())
+        {
+            codeCommand.CommandText = """
+                SELECT text, format, captured_at_ticks
+                FROM code_entries
+                ORDER BY captured_at_ticks DESC;
+                """;
+            using var reader = codeCommand.ExecuteReader();
+            while (reader.Read())
+            {
+                codeEntries.Add(new CodeHistoryEntry
+                {
+                    Text = reader.GetString(0),
+                    Format = reader.GetString(1),
+                    CapturedAt = DateTime.FromBinary(reader.GetInt64(2))
+                });
+            }
+        }
+
+        return new HistoryLoadResult(entries, ocrEntries, colorEntries, codeEntries, pendingDeletes, pendingUpserts);
     }
 
     public static HistoryFlushResult Flush(string databasePath, HistoryFlushRequest request)
@@ -177,6 +210,7 @@ internal static class HistoryStore
         var wroteEntryDelta = !wroteEntryRewrite && (request.PendingEntryUpserts.Count > 0 || request.PendingEntryDeletes.Count > 0);
         var wroteOcr = request.OcrDirty;
         var wroteColor = request.ColorDirty;
+        var wroteCode = request.CodeDirty;
 
         if (wroteEntryRewrite)
         {
@@ -255,8 +289,33 @@ internal static class HistoryStore
             }
         }
 
+        if (wroteCode)
+        {
+            using var clearCode = connection.CreateCommand();
+            clearCode.Transaction = transaction;
+            clearCode.CommandText = "DELETE FROM code_entries;";
+            clearCode.ExecuteNonQuery();
+
+            using var insertCode = connection.CreateCommand();
+            insertCode.Transaction = transaction;
+            insertCode.CommandText = """
+                INSERT INTO code_entries(text, format, captured_at_ticks)
+                VALUES($text, $format, $capturedAtTicks);
+                """;
+            var codeText = insertCode.Parameters.Add("$text", SqliteType.Text);
+            var codeFormat = insertCode.Parameters.Add("$format", SqliteType.Text);
+            var codeCapturedAtTicks = insertCode.Parameters.Add("$capturedAtTicks", SqliteType.Integer);
+            foreach (var entry in request.CodeEntries)
+            {
+                codeText.Value = entry.Text;
+                codeFormat.Value = entry.Format ?? "";
+                codeCapturedAtTicks.Value = entry.CapturedAt.ToBinary();
+                insertCode.ExecuteNonQuery();
+            }
+        }
+
         transaction.Commit();
-        return new HistoryFlushResult(wroteEntryRewrite, wroteEntryDelta, wroteOcr, wroteColor);
+        return new HistoryFlushResult(wroteEntryRewrite, wroteEntryDelta, wroteOcr, wroteColor, wroteCode);
     }
 
     private static SqliteConnection OpenConnection(string databasePath)

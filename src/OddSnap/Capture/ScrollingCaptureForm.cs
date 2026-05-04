@@ -687,6 +687,12 @@ public sealed partial class ScrollingCaptureForm : Form
         // Cached GDI objects
         private readonly Font _statusFont = UiChrome.ChromeFont(10f, FontStyle.Bold);
         private readonly Font _btnFont = UiChrome.ChromeFont(9.5f, FontStyle.Bold);
+        private static readonly StringFormat _statusFmt = new()
+        {
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap,
+        };
 
         // Button hit-test rects
         private Rectangle _manualFrameBtnRect;
@@ -754,10 +760,9 @@ public sealed partial class ScrollingCaptureForm : Form
             var barRect = new RectangleF(0, 0, Width, Height);
             WindowsDockRenderer.PaintSurface(g, barRect, CornerR);
 
-            using var statusBrush = new SolidBrush(UiChrome.SurfaceTextPrimary);
+            var statusBrush = SketchRenderer.GetToolColorBrush(UiChrome.SurfaceTextPrimary);
             var statusRect = new RectangleF(UiChrome.ScaleInt(16), 0, _statusRect.Width, Height);
-            var statusFmt = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
-            g.DrawString(_status, _statusFont, statusBrush, statusRect, statusFmt);
+            g.DrawString(_status, _statusFont, statusBrush, statusRect, _statusFmt);
 
             if (!_manualFrameBtnRect.IsEmpty)
             {

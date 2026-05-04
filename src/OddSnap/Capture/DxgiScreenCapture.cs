@@ -37,34 +37,31 @@ internal static class DxgiScreenCapture
                 using var graphics = Graphics.FromImage(result);
                 graphics.Clear(Color.Transparent);
 
-                foreach (var output in EnumerateOutputs(deviceBundle.Adapter))
+                foreach (var output in deviceBundle.GetOutputs())
                 {
-                    using (output)
-                    {
-                        var outputBounds = ToRectangle(output.Description.DesktopCoordinates);
-                        var overlap = Rectangle.Intersect(region, outputBounds);
-                        if (overlap.Width <= 0 || overlap.Height <= 0)
-                            continue;
+                    var outputBounds = ToRectangle(output.Description.DesktopCoordinates);
+                    var overlap = Rectangle.Intersect(region, outputBounds);
+                    if (overlap.Width <= 0 || overlap.Height <= 0)
+                        continue;
 
-                        using var duplication = output.Output.DuplicateOutput(deviceBundle.Device);
-                        using var frame = AcquireFrame(duplication);
-                        using var desktopTexture = frame.Resource.QueryInterface<ID3D11Texture2D>();
-                        var staging = deviceBundle.GetOrCreateStagingTexture(overlap.Width, overlap.Height);
+                    var duplication = output.GetOrCreateDuplication(deviceBundle.Device);
+                    using var frame = AcquireFrame(duplication);
+                    using var desktopTexture = frame.Resource.QueryInterface<ID3D11Texture2D>();
+                    var staging = deviceBundle.GetOrCreateStagingTexture(overlap.Width, overlap.Height);
 
-                        int sourceX = overlap.Left - outputBounds.Left;
-                        int sourceY = overlap.Top - outputBounds.Top;
-                        var sourceBox = new Vortice.Mathematics.Box(
-                            sourceX,
-                            sourceY,
-                            0,
-                            sourceX + overlap.Width,
-                            sourceY + overlap.Height,
-                            1);
-                        deviceBundle.Context.CopySubresourceRegion(staging, 0, 0, 0, 0, desktopTexture, 0, sourceBox);
+                    int sourceX = overlap.Left - outputBounds.Left;
+                    int sourceY = overlap.Top - outputBounds.Top;
+                    var sourceBox = new Vortice.Mathematics.Box(
+                        sourceX,
+                        sourceY,
+                        0,
+                        sourceX + overlap.Width,
+                        sourceY + overlap.Height,
+                        1);
+                    deviceBundle.Context.CopySubresourceRegion(staging, 0, 0, 0, 0, desktopTexture, 0, sourceBox);
 
-                        var target = new Rectangle(overlap.Left - region.Left, overlap.Top - region.Top, overlap.Width, overlap.Height);
-                        CopyTextureToBitmap(deviceBundle.Context, staging, result, target);
-                    }
+                    var target = new Rectangle(overlap.Left - region.Left, overlap.Top - region.Top, overlap.Width, overlap.Height);
+                    CopyTextureToBitmap(deviceBundle.Context, staging, result, target);
                 }
 
                 return result;
@@ -82,7 +79,7 @@ internal static class DxgiScreenCapture
         var deviceBundle = GetOrCreateDeviceBundle();
         lock (deviceBundle.CaptureSyncRoot)
         {
-            foreach (var output in EnumerateOutputs(deviceBundle.Adapter))
+            foreach (var output in deviceBundle.GetOutputs())
             {
                 try
                 {
@@ -90,7 +87,7 @@ internal static class DxgiScreenCapture
                     if (outputBounds.Width <= 0 || outputBounds.Height <= 0)
                         continue;
 
-                    using var duplication = output.Output.DuplicateOutput(deviceBundle.Device);
+                    var duplication = output.GetOrCreateDuplication(deviceBundle.Device);
                     using var frame = AcquireFrame(duplication);
                     using var desktopTexture = frame.Resource.QueryInterface<ID3D11Texture2D>();
                     _ = deviceBundle.GetOrCreateStagingTexture(outputBounds.Width, outputBounds.Height);
@@ -98,10 +95,6 @@ internal static class DxgiScreenCapture
                 catch
                 {
                     // Best-effort warmup only. A failure here should not block first capture.
-                }
-                finally
-                {
-                    output.Dispose();
                 }
             }
         }
@@ -152,17 +145,19 @@ internal static class DxgiScreenCapture
         return new DeviceBundle(device, context, adapter);
     }
 
-    private static IEnumerable<OutputBundle> EnumerateOutputs(IDXGIAdapter adapter)
+    private static List<OutputBundle> EnumerateOutputs(IDXGIAdapter adapter)
     {
+        var outputs = new List<OutputBundle>();
         int index = 0;
         while (adapter.EnumOutputs((uint)index, out IDXGIOutput output).Success)
         {
             var output1 = output.QueryInterface<IDXGIOutput1>();
             var desc = output.Description;
             output.Dispose();
-            yield return new OutputBundle(output1, desc);
+            outputs.Add(new OutputBundle(output1, desc));
             index++;
         }
+        return outputs;
     }
 
     private static FrameBundle AcquireFrame(IDXGIOutputDuplication duplication)
@@ -225,10 +220,30 @@ internal static class DxgiScreenCapture
 
     private static Rectangle ToRectangle(Vortice.RawRect rect) => rect;
 
-    private sealed record DeviceBundle(ID3D11Device Device, ID3D11DeviceContext Context, IDXGIAdapter Adapter) : IDisposable
+    private sealed class DeviceBundle : IDisposable
     {
+        public ID3D11Device Device { get; }
+        public ID3D11DeviceContext Context { get; }
+        public IDXGIAdapter Adapter { get; }
         public object CaptureSyncRoot { get; } = new();
         private readonly Dictionary<Size, ID3D11Texture2D> _stagingTextures = new();
+        private List<OutputBundle>? _outputs;
+
+        public DeviceBundle(ID3D11Device device, ID3D11DeviceContext context, IDXGIAdapter adapter)
+        {
+            Device = device;
+            Context = context;
+            Adapter = adapter;
+        }
+
+        public IReadOnlyList<OutputBundle> GetOutputs()
+        {
+            if (_outputs is not null)
+                return _outputs;
+
+            _outputs = EnumerateOutputs(Adapter);
+            return _outputs;
+        }
 
         public ID3D11Texture2D GetOrCreateStagingTexture(int width, int height)
         {
@@ -256,6 +271,12 @@ internal static class DxgiScreenCapture
 
         public void Dispose()
         {
+            if (_outputs is not null)
+            {
+                foreach (var output in _outputs)
+                    output.Dispose();
+                _outputs = null;
+            }
             foreach (var texture in _stagingTextures.Values)
                 texture.Dispose();
             _stagingTextures.Clear();
@@ -265,9 +286,34 @@ internal static class DxgiScreenCapture
         }
     }
 
-    private sealed record OutputBundle(IDXGIOutput1 Output, OutputDescription Description) : IDisposable
+    private sealed class OutputBundle : IDisposable
     {
-        public void Dispose() => Output.Dispose();
+        private IDXGIOutputDuplication? _duplication;
+
+        public IDXGIOutput1 Output { get; }
+        public OutputDescription Description { get; }
+
+        public OutputBundle(IDXGIOutput1 output, OutputDescription description)
+        {
+            Output = output;
+            Description = description;
+        }
+
+        public IDXGIOutputDuplication GetOrCreateDuplication(ID3D11Device device)
+        {
+            if (_duplication is not null)
+                return _duplication;
+
+            _duplication = Output.DuplicateOutput(device);
+            return _duplication;
+        }
+
+        public void Dispose()
+        {
+            _duplication?.Dispose();
+            _duplication = null;
+            Output.Dispose();
+        }
     }
 
     private sealed record FrameBundle(IDXGIOutputDuplication Duplication, IDXGIResource Resource) : IDisposable

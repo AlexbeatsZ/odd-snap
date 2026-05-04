@@ -385,9 +385,11 @@ public partial class SettingsWindow
         var isImages = HistoryCategoryCombo.SelectedIndex == 0;
         var isText = HistoryCategoryCombo.SelectedIndex == 1;
         var isColors = HistoryCategoryCombo.SelectedIndex == 3;
+        var isCodes = HistoryCategoryCombo.SelectedIndex == 5;
         var showSearch = (isImages && _settingsService.Settings.ShowImageSearchBar && !_imageSearchRowAutoHidden) ||
                          isText ||
-                         isColors;
+                         isColors ||
+                         isCodes;
         ImageSearchRow.Visibility = showSearch ? Visibility.Visible : Visibility.Collapsed;
         ImageSearchFiltersBtn.Visibility = isImages ? Visibility.Visible : Visibility.Collapsed;
         if (!isImages)
@@ -401,7 +403,9 @@ public partial class SettingsWindow
                 ? _imageSearchQuery
                 : isText
                     ? _ocrSearchQuery
-                    : _colorSearchQuery;
+                    : isColors
+                        ? _colorSearchQuery
+                        : _codeSearchQuery;
             if (!string.Equals(ImageSearchBox.Text, expectedText, StringComparison.Ordinal))
             {
                 _suppressHistorySearchBoxTextEvents = true;

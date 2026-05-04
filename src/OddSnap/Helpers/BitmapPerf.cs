@@ -69,19 +69,25 @@ internal static class BitmapPerf
         {
             byte* basePtr = (byte*)data.Scan0;
             int stride = data.Stride;
+            int width = bitmap.Width;
+            int height = bitmap.Height;
 
-            for (int y = 0; y < bitmap.Height; y++)
+            // BT.601 luma weights as Q16 fixed-point: 0.299, 0.587, 0.114 → 19595, 38470, 7471 (sum = 65536).
+            // Contrast boost: lum' = clamp((lum - 128) * 2 + 128, 0, 255) → lum'/255 = (lum*2 - 128) / 255.
+            const int RWeight = 19595;
+            const int GWeight = 38470;
+            const int BWeight = 7471;
+
+            for (int y = 0; y < height; y++)
             {
                 byte* row = basePtr + (y * stride);
-                for (int x = 0; x < bitmap.Width; x++)
+                for (int x = 0; x < width; x++)
                 {
                     byte* px = row + (x * 4);
-                    byte b = px[0];
-                    byte g = px[1];
-                    byte r = px[2];
-
-                    int lum = (int)(r * 0.299 + g * 0.587 + b * 0.114);
-                    int boosted = Math.Clamp((lum - 128) * 2 + 128, 0, 255);
+                    int lum = (RWeight * px[2] + GWeight * px[1] + BWeight * px[0] + 32768) >> 16;
+                    int boosted = (lum << 1) - 128;
+                    if (boosted < 0) boosted = 0;
+                    else if (boosted > 255) boosted = 255;
                     byte v = (byte)boosted;
 
                     px[0] = v;
@@ -139,33 +145,75 @@ internal static class BitmapPerf
         {
             byte* basePtr = (byte*)data.Scan0;
             int stride = data.Stride;
-            int minX = normalized.Width;
-            int minY = normalized.Height;
-            int maxX = -1;
-            int maxY = -1;
+            int width = normalized.Width;
+            int height = normalized.Height;
 
-            for (int y = 0; y < normalized.Height; y++)
+            // Walk inward from each edge — stops at the first row/column with any non-transparent pixel.
+            int top = -1;
+            for (int y = 0; y < height && top < 0; y++)
             {
                 byte* row = basePtr + (y * stride);
-                for (int x = 0; x < normalized.Width; x++)
+                for (int x = 0; x < width; x++)
                 {
-                    if (row[(x * 4) + 3] <= alphaThreshold)
-                        continue;
-
-                    if (x < minX) minX = x;
-                    if (y < minY) minY = y;
-                    if (x > maxX) maxX = x;
-                    if (y > maxY) maxY = y;
+                    if (row[(x * 4) + 3] > alphaThreshold)
+                    {
+                        top = y;
+                        break;
+                    }
                 }
             }
 
-            if (maxX < minX || maxY < minY)
+            if (top < 0)
             {
                 isEmpty = true;
             }
             else
             {
-                crop = Rectangle.FromLTRB(minX, minY, maxX + 1, maxY + 1);
+                int bottom = top;
+                for (int y = height - 1; y > top; y--)
+                {
+                    byte* row = basePtr + (y * stride);
+                    bool found = false;
+                    for (int x = 0; x < width; x++)
+                    {
+                        if (row[(x * 4) + 3] > alphaThreshold)
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found) { bottom = y; break; }
+                }
+
+                int left = width;
+                int right = -1;
+                for (int y = top; y <= bottom; y++)
+                {
+                    byte* row = basePtr + (y * stride);
+                    for (int x = 0; x < left; x++)
+                    {
+                        if (row[(x * 4) + 3] > alphaThreshold)
+                        {
+                            left = x;
+                            break;
+                        }
+                    }
+                    for (int x = width - 1; x > right; x--)
+                    {
+                        if (row[(x * 4) + 3] > alphaThreshold)
+                        {
+                            right = x;
+                            break;
+                        }
+                    }
+                    if (left == 0 && right == width - 1)
+                        break;
+                }
+
+                if (right < left)
+                    isEmpty = true;
+                else
+                    crop = Rectangle.FromLTRB(left, top, right + 1, bottom + 1);
             }
         }
         finally

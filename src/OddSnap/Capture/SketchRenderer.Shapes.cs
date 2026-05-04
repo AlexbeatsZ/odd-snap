@@ -24,13 +24,7 @@ public static partial class SketchRenderer
             DrawSoftPathStrokeShadow(g, path, size);
         }
 
-        using var pen = new Pen(color, Math.Max(2f, size))
-        {
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round,
-            LineJoin = LineJoin.Round
-        };
-        g.DrawPath(pen, path);
+        g.DrawPath(GetRoundCapPen(color, Math.Max(2f, size)), path);
         g.SmoothingMode = SmoothingMode.Default;
     }
 
@@ -42,8 +36,8 @@ public static partial class SketchRenderer
         if (rect.Width < 1 || rect.Height < 1) return;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         using var path = RoundedRect(rect, 5);
-        using var brush = new SolidBrush(Color.FromArgb(92, color.R, color.G, color.B));
-        g.FillPath(brush, path);
+        var highlight = Color.FromArgb(92, color.R, color.G, color.B);
+        g.FillPath(GetToolColorBrush(highlight), path);
         g.SmoothingMode = SmoothingMode.Default;
     }
 
@@ -55,22 +49,30 @@ public static partial class SketchRenderer
 
         if (strokeShadow)
         {
-            using var s1Path = RoundedRect(new Rectangle(rect.X + 2, rect.Y + 2, rect.Width, rect.Height), 3);
-            using var s2Path = RoundedRect(new Rectangle(rect.X + 3, rect.Y + 3, rect.Width, rect.Height), 3);
-            using var shadowPen1 = new Pen(AnnotShadow1, 3f) { LineJoin = LineJoin.Round };
-            using var shadowPen2 = new Pen(AnnotShadow2, 3f) { LineJoin = LineJoin.Round };
-            g.DrawPath(shadowPen1, s1Path);
-            g.DrawPath(shadowPen2, s2Path);
-            using var strokePen = new Pen(AnnotStroke, 3f) { LineJoin = LineJoin.Round };
+            // Translate the same path instead of rebuilding it 10 times.
+            var state = g.Save();
+            try
+            {
+                g.TranslateTransform(2, 2);
+                g.DrawPath(ShapeShadowPen1, path);
+                g.TranslateTransform(1, 1); // now at +3,+3
+                g.DrawPath(ShapeShadowPen2, path);
+            }
+            finally { g.Restore(state); }
+
             foreach (var (ox, oy) in StrokeOffsets)
             {
-                using var sp = RoundedRect(new Rectangle(rect.X + ox, rect.Y + oy, rect.Width, rect.Height), 3);
-                g.DrawPath(strokePen, sp);
+                var s = g.Save();
+                try
+                {
+                    g.TranslateTransform(ox, oy);
+                    g.DrawPath(ShapeStrokePen, path);
+                }
+                finally { g.Restore(s); }
             }
         }
 
-        using var pen = new Pen(color, 3f) { LineJoin = LineJoin.Round };
-        g.DrawPath(pen, path);
+        g.DrawPath(GetRoundJoinPen(color, 3f), path);
         g.SmoothingMode = SmoothingMode.Default;
     }
 
@@ -81,17 +83,13 @@ public static partial class SketchRenderer
 
         if (strokeShadow)
         {
-            using var shadowPen1 = new Pen(AnnotShadow1, 3f);
-            using var shadowPen2 = new Pen(AnnotShadow2, 3f);
-            g.DrawEllipse(shadowPen1, new Rectangle(rect.X + 2, rect.Y + 2, rect.Width, rect.Height));
-            g.DrawEllipse(shadowPen2, new Rectangle(rect.X + 3, rect.Y + 3, rect.Width, rect.Height));
-            using var strokePen = new Pen(AnnotStroke, 3f);
+            g.DrawEllipse(ShapeShadowPen1, new Rectangle(rect.X + 2, rect.Y + 2, rect.Width, rect.Height));
+            g.DrawEllipse(ShapeShadowPen2, new Rectangle(rect.X + 3, rect.Y + 3, rect.Width, rect.Height));
             foreach (var (ox, oy) in StrokeOffsets)
-                g.DrawEllipse(strokePen, new Rectangle(rect.X + ox, rect.Y + oy, rect.Width, rect.Height));
+                g.DrawEllipse(ShapeStrokePen, new Rectangle(rect.X + ox, rect.Y + oy, rect.Width, rect.Height));
         }
 
-        using var pen = new Pen(color, 3f) { LineJoin = LineJoin.Round };
-        g.DrawEllipse(pen, rect);
+        g.DrawEllipse(GetRoundJoinPen(color, 3f), rect);
         g.SmoothingMode = SmoothingMode.Default;
     }
 
@@ -228,20 +226,20 @@ public static partial class SketchRenderer
 
     private static void DrawSoftPathStrokeShadow(Graphics g, GraphicsPath path, float thickness)
     {
-        foreach (var step in SoftShadowSteps)
+        // Translate the same path each step instead of cloning + matrix per pass.
+        var state = g.Save();
+        try
         {
-            using var shadowPath = (GraphicsPath)path.Clone();
-            using var matrix = new Matrix();
-            matrix.Translate(step.dx, step.dy);
-            shadowPath.Transform(matrix);
-            using var pen = new Pen(Color.FromArgb(step.alpha, 0, 0, 0), thickness + (step.dx > 0 ? 1.2f : 0.5f))
+            int prevDx = 0, prevDy = 0;
+            foreach (var step in SoftShadowSteps)
             {
-                StartCap = LineCap.Round,
-                EndCap = LineCap.Round,
-                LineJoin = LineJoin.Round
-            };
-            g.DrawPath(pen, shadowPath);
+                g.TranslateTransform(step.dx - prevDx, step.dy - prevDy);
+                prevDx = step.dx; prevDy = step.dy;
+                float w = thickness + (step.dx > 0 ? 1.2f : 0.5f);
+                g.DrawPath(GetShadowPen(step.alpha, w), path);
+            }
         }
+        finally { g.Restore(state); }
     }
 
     /// <summary>Convert outline points to a smooth GraphicsPath using quadratic bezier approximation.</summary>

@@ -21,6 +21,9 @@ public static partial class SketchRenderer
     private static readonly SolidBrush BrushShadow1 = new(AnnotShadow1);
     private static readonly SolidBrush BrushShadow2 = new(AnnotShadow2);
     private static readonly SolidBrush BrushStroke = new(AnnotStroke);
+    private static readonly Pen ShapeShadowPen1 = new(AnnotShadow1, 3f) { LineJoin = LineJoin.Round };
+    private static readonly Pen ShapeShadowPen2 = new(AnnotShadow2, 3f) { LineJoin = LineJoin.Round };
+    private static readonly Pen ShapeStrokePen = new(AnnotStroke, 3f) { LineJoin = LineJoin.Round };
 
     // Pre-computed 8-direction offsets for stroke outline
     private static readonly (int dx, int dy)[] StrokeOffsets =
@@ -32,6 +35,69 @@ public static partial class SketchRenderer
 
     // Reusable point buffer for offset calculations (avoids LINQ .Select().ToArray() per frame)
     [ThreadStatic] private static Point[]? _offsetBuffer;
+
+    // Pen caches keyed on (argb, width-quantized). Tool colors come from a small palette,
+    // so the cache is bounded and never grows unbounded over a session.
+    private static readonly Dictionary<long, Pen> _roundCapPens = new();
+    private static readonly Dictionary<long, Pen> _roundJoinPens = new();
+    private static readonly Dictionary<long, Pen> _flatEndCapPens = new();
+
+    private static long PenKey(int argb, float width) =>
+        ((long)argb << 16) | (uint)(int)Math.Round(width * 16f);
+
+    /// <summary>Round-cap, round-join cached pen for stroke drawing. Do not dispose.</summary>
+    internal static Pen GetRoundCapPen(Color color, float width)
+    {
+        long key = PenKey(color.ToArgb(), width);
+        if (_roundCapPens.TryGetValue(key, out var pen)) return pen;
+        pen = new Pen(color, width)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round
+        };
+        _roundCapPens[key] = pen;
+        return pen;
+    }
+
+    /// <summary>Round-join cached pen for shape outlines (rect/circle). Do not dispose.</summary>
+    internal static Pen GetRoundJoinPen(Color color, float width)
+    {
+        long key = PenKey(color.ToArgb(), width);
+        if (_roundJoinPens.TryGetValue(key, out var pen)) return pen;
+        pen = new Pen(color, width) { LineJoin = LineJoin.Round };
+        _roundJoinPens[key] = pen;
+        return pen;
+    }
+
+    /// <summary>Round-start, flat-end pen for curved-arrow shaft. Do not dispose.</summary>
+    internal static Pen GetFlatEndCapPen(Color color, float width)
+    {
+        long key = PenKey(color.ToArgb(), width);
+        if (_flatEndCapPens.TryGetValue(key, out var pen)) return pen;
+        pen = new Pen(color, width)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Flat,
+            LineJoin = LineJoin.Round
+        };
+        _flatEndCapPens[key] = pen;
+        return pen;
+    }
+
+    // SolidBrush cache keyed on ARGB. Tool colors come from a small palette,
+    // so the cache is bounded over a session. Cached brushes are not disposed.
+    private static readonly Dictionary<int, SolidBrush> _toolColorBrushes = new();
+
+    /// <summary>Cached SolidBrush for arbitrary colors. Do not dispose.</summary>
+    internal static SolidBrush GetToolColorBrush(Color color)
+    {
+        int argb = color.ToArgb();
+        if (_toolColorBrushes.TryGetValue(argb, out var brush)) return brush;
+        brush = new SolidBrush(color);
+        _toolColorBrushes[argb] = brush;
+        return brush;
+    }
 
     /// <summary>Offset points into a reusable buffer — avoids allocating a new array per shadow/stroke pass.</summary>
     private static Point[] OffsetPointsInPlace(Point[] src, int ox, int oy)
@@ -69,13 +135,7 @@ public static partial class SketchRenderer
         g.SmoothingMode = SmoothingMode.AntiAlias;
         if (strokeShadow)
             DrawSoftLineShadow(g, from, to, 3f);
-        using var pen = new Pen(color, 3.2f)
-        {
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round,
-            LineJoin = LineJoin.Round
-        };
-        g.DrawLine(pen, from, to);
+        g.DrawLine(GetRoundCapPen(color, 3.2f), from, to);
         g.SmoothingMode = SmoothingMode.Default;
     }
 
@@ -98,13 +158,7 @@ public static partial class SketchRenderer
             DrawArrowhead(g, new PointF(to.X + 2, to.Y + 2), nx, ny, len, Color.FromArgb(42, 0, 0, 0), AnnotationStrokeWidth, seed + 3000);
         }
 
-        using var pen = new Pen(color, AnnotationStrokeWidth)
-        {
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round,
-            LineJoin = LineJoin.Round
-        };
-        g.DrawLine(pen, from, shaftEnd);
+        g.DrawLine(GetRoundCapPen(color, AnnotationStrokeWidth), from, shaftEnd);
         DrawArrowhead(g, to, nx, ny, len, color, AnnotationStrokeWidth, seed + 6000);
 
         g.SmoothingMode = SmoothingMode.Default;
@@ -153,31 +207,25 @@ public static partial class SketchRenderer
         if (l < 1) return;
         float nx = dx / l, ny = dy / l;
 
-        // Shorten the curve: pull the last point back so the line doesn't poke through the arrowhead
-        var shortenedPts = (PointF[])curvePts.Clone();
-        shortenedPts[^1] = new PointF(
+        // Shorten the curve: pull the last point back so the line doesn't poke through the arrowhead.
+        // curvePts is local to this call — patch in place rather than cloning.
+        curvePts[^1] = new PointF(
             tip.X - nx * headSize * 0.55f,
             tip.Y - ny * headSize * 0.55f);
 
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
-        // Helper to draw curve with a given pen
-        void DrawCurve(PointF[] pts, Pen pen)
-        {
-            if (pts.Length >= 4)
-                g.DrawCurve(pen, pts, 0.45f);
-            else
-                g.DrawLines(pen, pts);
-        }
-
         if (strokeShadow)
         {
-            DrawSoftCurveShadow(g, shortenedPts, thickness, shortenedPts.Length >= 4);
+            DrawSoftCurveShadow(g, curvePts, thickness, curvePts.Length >= 4);
             DrawArrowhead(g, new PointF(tip.X + 2, tip.Y + 2), nx, ny, len, Color.FromArgb(42, 0, 0, 0), thickness + 0.5f, seed + 4000);
         }
 
-        using var mainPen = new Pen(color, thickness) { StartCap = LineCap.Round, EndCap = LineCap.Flat, LineJoin = LineJoin.Round };
-        DrawCurve(shortenedPts, mainPen);
+        var mainPen = GetFlatEndCapPen(color, thickness);
+        if (curvePts.Length >= 4)
+            g.DrawCurve(mainPen, curvePts, 0.45f);
+        else
+            g.DrawLines(mainPen, curvePts);
         DrawArrowhead(g, tip, nx, ny, len, color, thickness + 0.5f, seed + 7000);
 
         g.SmoothingMode = SmoothingMode.Default;
@@ -193,23 +241,14 @@ public static partial class SketchRenderer
         var left = RotatePoint(new PointF(bx, by), tip, -angle);
         var right = RotatePoint(new PointF(bx, by), tip, angle);
 
-        using var pen = new Pen(color, thickness)
-        {
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round,
-            LineJoin = LineJoin.Round
-        };
+        var pen = GetRoundCapPen(color, thickness);
         g.DrawLine(pen, left, tip);
         g.DrawLine(pen, right, tip);
 
         if (color.A > 80)
         {
-            using var echoPen = new Pen(Color.FromArgb((int)(color.A * 0.35f), color.R, color.G, color.B), Math.Max(1.4f, thickness * 0.55f))
-            {
-                StartCap = LineCap.Round,
-                EndCap = LineCap.Round,
-                LineJoin = LineJoin.Round
-            };
+            var echoColor = Color.FromArgb((int)(color.A * 0.35f), color.R, color.G, color.B);
+            var echoPen = GetRoundCapPen(echoColor, Math.Max(1.4f, thickness * 0.55f));
             g.DrawLine(echoPen, left, tip);
             g.DrawLine(echoPen, right, tip);
         }

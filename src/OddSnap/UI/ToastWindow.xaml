@@ -110,23 +110,38 @@
                     </Border>
                 </Grid>
 
-                <StackPanel x:Name="TextContentPanel" Grid.Row="1" Orientation="Horizontal" Margin="14,11,14,11">
-                    <Border x:Name="ColorSwatch" Width="28" Height="28" CornerRadius="8"
+                <Grid x:Name="TextContentPanel" Grid.Row="1" Margin="14,11,14,11">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Border x:Name="ColorSwatch" Grid.Column="0" Width="28" Height="28" CornerRadius="8"
                             Margin="0,0,12,0" Visibility="Collapsed" VerticalAlignment="Center"/>
-                    <Border x:Name="InlinePreviewHost" Width="44" Height="44" CornerRadius="8"
+                    <Border x:Name="InlinePreviewHost" Grid.Column="1" Width="44" Height="44" CornerRadius="8"
                             Margin="0,0,12,0" Visibility="Collapsed" VerticalAlignment="Center"
                             Background="#12FFFFFF" BorderBrush="#22FFFFFF" BorderThickness="1">
                         <Image x:Name="InlinePreviewImage" Stretch="Uniform" Margin="4"
                                RenderOptions.BitmapScalingMode="HighQuality"/>
                     </Border>
-                    <StackPanel VerticalAlignment="Center">
+                    <StackPanel Grid.Column="2" VerticalAlignment="Center">
                         <TextBlock x:Name="TitleText" FontSize="12.75" FontWeight="SemiBold"
-                                   FontFamily="Segoe UI Variable Text"/>
+                                   FontFamily="Segoe UI Variable Text" TextWrapping="Wrap"/>
                         <TextBlock x:Name="BodyText" FontSize="11.5" Opacity="0.72" TextWrapping="Wrap"
                                    FontFamily="Segoe UI Variable Text"
                                    MaxWidth="292" Margin="0,2,0,0"/>
                     </StackPanel>
-                </StackPanel>
+                    <Border x:Name="TextCloseBtn" Grid.Column="3" Width="22" Height="22" CornerRadius="6"
+                            Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
+                            Cursor="Hand"
+                            VerticalAlignment="Top" Margin="10,-2,-4,0"
+                            Visibility="Collapsed">
+                        <Image x:Name="TextCloseIcon" Width="11" Height="11" Stretch="Uniform" Opacity="0.78"
+                               RenderOptions.BitmapScalingMode="HighQuality"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                </Grid>
             </Grid>
 
             <Grid Grid.Row="1" ClipToBounds="True">

@@ -35,15 +35,15 @@ const features = [
 ];
 
 const showcase = [
-  { title: "annotate", desc: "arrows, text, shapes, blur, highlights, freehand, step numbers, emoji, and ruler with undo/redo.", img: "annotations.png" },
-  { title: "ocr & translate", desc: "extract text from any region with 100+ ocr languages. translate offline with argos or online with google.", img: "ocr-screenshot.png" },
-  { title: "ai redirects", desc: "open chatgpt, claude, gemini, or google lens right after capture. image stays pinned and ready to drop in.", img: "ai-redirects.png" },
-  { title: "upscale", desc: "upscale any capture locally with swinir x4 or real-esrgan x4plus. compare before and after side by side.", img: "upscale.png" },
-  { title: "stickers", desc: "remove backgrounds locally with 5 ai models. add stroke and shadow finishing, save as transparent png.", img: "sticker-showcase.png" },
-  { title: "record", desc: "save as gif, mp4, webm, or mkv. microphone and desktop audio at 15/24/30/60 fps.", img: "recording.png" },
-  { title: "search", desc: "find past screenshots by filename, ocr text, or ai-powered semantic similarity.", img: "search-screenshot.png" },
-  { title: "color picker", desc: "pick any color on screen with a magnified preview. hex and rgb to clipboard.", img: "color-picker.png" },
-  { title: "uploads", desc: "19 destinations: imgur, s3/r2/b2, dropbox, github, onedrive, immich, webdav, and more.", img: "uploads.png" },
+  { title: "annotate", desc: "arrows, text, shapes, blur, highlights, freehand, step numbers, emoji, and ruler with undo/redo.", img: "annotations.webp" },
+  { title: "ocr & translate", desc: "extract text from any region with 100+ ocr languages. translate offline with argos or online with google.", img: "ocr-screenshot.webp" },
+  { title: "ai redirects", desc: "open chatgpt, claude, gemini, or google lens right after capture. image stays pinned and ready to drop in.", img: "ai-redirects.webp" },
+  { title: "upscale", desc: "upscale any capture locally with swinir x4 or real-esrgan x4plus. compare before and after side by side.", img: "upscale.webp" },
+  { title: "stickers", desc: "remove backgrounds locally with 5 ai models. add stroke and shadow finishing, save as transparent png.", img: "sticker-showcase.webp" },
+  { title: "record", desc: "save as gif, mp4, webm, or mkv. microphone and desktop audio at 15/24/30/60 fps.", img: "recording.webp" },
+  { title: "search", desc: "find past screenshots by filename, ocr text, or ai-powered semantic similarity.", img: "search-screenshot.webp" },
+  { title: "color picker", desc: "pick any color on screen with a magnified preview. hex and rgb to clipboard.", img: "color-picker.webp" },
+  { title: "uploads", desc: "19 destinations: imgur, s3/r2/b2, dropbox, github, onedrive, immich, webdav, and more.", img: "uploads.webp" },
 ];
 
 const faq = [
@@ -205,7 +205,7 @@ export default function Home() {
         <div className="mx-auto flex max-w-[760px] flex-col items-center text-center">
           <div className="mb-9 rounded-[2rem] border border-[#DDD5C7] bg-[#FFFDF8]/72 p-4 shadow-[0_24px_70px_rgba(72,57,34,0.13)] backdrop-blur">
             <img
-              src={base + "oddsnap-square.png"}
+              src={base + "oddsnap-square.webp"}
               alt=""
               className="h-28 w-28 sm:h-32 sm:w-32"
             />

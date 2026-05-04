@@ -42,6 +42,16 @@ public sealed class PickerMagnifierForm : Form
     private readonly Pen _outerRingPen = new(UiChrome.SurfaceBorderSubtle, 1f);
     private readonly SolidBrush _pillBg = new(UiChrome.SurfacePill);
     private readonly Pen _pillBorder = new(UiChrome.SurfaceBorderSubtle, 1f);
+    private readonly SolidBrush _dotFill = new(UiChrome.SurfaceTextPrimary);
+    private readonly Pen _dotBorder = new(UiChrome.SurfaceBorderStrong, 1f);
+
+    // Lens shadow passes are constant — cache the brushes once.
+    private static readonly (int dx, int dy, SolidBrush brush)[] LensShadowPasses =
+    {
+        (2, 3, new SolidBrush(Color.FromArgb(16, 0, 0, 0))),
+        (1, 2, new SolidBrush(Color.FromArgb(30, 0, 0, 0))),
+        (0, 1, new SolidBrush(Color.FromArgb(44, 0, 0, 0))),
+    };
 
     public PickerMagnifierForm()
     {
@@ -152,17 +162,10 @@ public sealed class PickerMagnifierForm : Form
 
         var shadowRect = lensRect;
         shadowRect.Inflate(1, 1);
-        var shadowPasses = new (int dx, int dy, int a)[]
-        {
-            (2, 3, 16),
-            (1, 2, 30),
-            (0, 1, 44),
-        };
-        foreach (var (dx, dy, a) in shadowPasses)
+        foreach (var (dx, dy, brush) in LensShadowPasses)
         {
             var sr = shadowRect;
             sr.Offset(dx, dy);
-            using var brush = new SolidBrush(Color.FromArgb(a, 0, 0, 0));
             using var shadowPath = RoundedRect(sr, LensRadius + 2);
             g.FillPath(brush, shadowPath);
         }
@@ -187,10 +190,8 @@ public sealed class PickerMagnifierForm : Form
             g.DrawPath(_ringPen, innerPath);
 
         int dotSize = 4;
-        using var dotFill = new SolidBrush(UiChrome.SurfaceTextPrimary);
-        g.FillRectangle(dotFill, cx - dotSize / 2, cy - dotSize / 2, dotSize, dotSize);
-        using var dotBorder = new Pen(UiChrome.SurfaceBorderStrong, 1f);
-        g.DrawRectangle(dotBorder, cx - dotSize / 2, cy - dotSize / 2, dotSize, dotSize);
+        g.FillRectangle(_dotFill, cx - dotSize / 2, cy - dotSize / 2, dotSize, dotSize);
+        g.DrawRectangle(_dotBorder, cx - dotSize / 2, cy - dotSize / 2, dotSize, dotSize);
 
         if (_showInfo)
         {
@@ -285,6 +286,8 @@ public sealed class PickerMagnifierForm : Form
             _outerRingPen.Dispose();
             _pillBg.Dispose();
             _pillBorder.Dispose();
+            _dotFill.Dispose();
+            _dotBorder.Dispose();
         }
         base.Dispose(disposing);
     }

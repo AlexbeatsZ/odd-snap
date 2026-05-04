@@ -14,68 +14,95 @@ public static partial class SketchRenderer
     };
     private static readonly Color ShadowColor = Color.FromArgb(60, 0, 0, 0);
 
+    // Pre-cached brushes for the four fixed SoftShadowSteps alphas — avoids re-alloc per call.
+    private static readonly SolidBrush[] SoftShadowBrushes =
+    {
+        new(Color.FromArgb(14, 0, 0, 0)),
+        new(Color.FromArgb(24, 0, 0, 0)),
+        new(Color.FromArgb(42, 0, 0, 0)),
+        new(Color.FromArgb(58, 0, 0, 0)),
+    };
+
+    // Shadow pens are black with one of 4 fixed alphas; thickness varies by caller's annotation width.
+    // Cache keyed on (alpha, width-quantized) — bounded since thicknesses come from a small set.
+    private static readonly Dictionary<long, Pen> _shadowPens = new();
+
+    private static Pen GetShadowPen(int alpha, float width)
+    {
+        long key = ((long)alpha << 32) | (uint)(int)Math.Round(width * 16f);
+        if (_shadowPens.TryGetValue(key, out var pen)) return pen;
+        pen = new Pen(Color.FromArgb(alpha, 0, 0, 0), width)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round
+        };
+        _shadowPens[key] = pen;
+        return pen;
+    }
+
     private static void DrawSoftLineShadow(Graphics g, PointF from, PointF to, float thickness)
     {
         foreach (var step in SoftShadowSteps)
         {
-            using var pen = new Pen(Color.FromArgb(step.alpha, 0, 0, 0), thickness + (step.dx > 0 ? 1.2f : 0.5f))
-            { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-            g.DrawLine(pen, from.X + step.dx, from.Y + step.dy, to.X + step.dx, to.Y + step.dy);
+            float w = thickness + (step.dx > 0 ? 1.2f : 0.5f);
+            g.DrawLine(GetShadowPen(step.alpha, w),
+                from.X + step.dx, from.Y + step.dy,
+                to.X + step.dx, to.Y + step.dy);
         }
     }
 
-    private static void DrawSoftCurveShadow(Graphics g, Point[] points, float thickness, bool asCurve)
-    {
-        foreach (var step in SoftShadowSteps)
-        {
-            var shadowPts = points.Select(p => new Point(p.X + step.dx, p.Y + step.dy)).ToArray();
-            using var pen = new Pen(Color.FromArgb(step.alpha, 0, 0, 0), thickness + (step.dx > 0 ? 1.2f : 0.5f))
-                { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-            if (asCurve && shadowPts.Length >= 4)
-                g.DrawCurve(pen, shadowPts, 0.5f);
-            else
-                g.DrawLines(pen, shadowPts);
-        }
-    }
+    [ThreadStatic] private static PointF[]? _curveShadowBuffer;
 
     private static void DrawSoftCurveShadow(Graphics g, PointF[] points, float thickness, bool asCurve)
     {
+        // Reuse a thread-static buffer (grow-only) — avoids 4× LINQ allocations per call.
+        if (_curveShadowBuffer == null || _curveShadowBuffer.Length < points.Length)
+            _curveShadowBuffer = new PointF[points.Length];
+        var buffer = _curveShadowBuffer;
+        int n = points.Length;
+
         foreach (var step in SoftShadowSteps)
         {
-            var shadowPts = new PointF[points.Length];
-            for (int i = 0; i < points.Length; i++)
-                shadowPts[i] = new PointF(points[i].X + step.dx, points[i].Y + step.dy);
+            for (int i = 0; i < n; i++)
+                buffer[i] = new PointF(points[i].X + step.dx, points[i].Y + step.dy);
 
-            using var pen = new Pen(Color.FromArgb(step.alpha, 0, 0, 0), thickness + (step.dx > 0 ? 1.2f : 0.5f))
-                { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
-            if (asCurve && shadowPts.Length >= 4)
-                g.DrawCurve(pen, shadowPts, 0.45f);
+            float w = thickness + (step.dx > 0 ? 1.2f : 0.5f);
+            var pen = GetShadowPen(step.alpha, w);
+            if (asCurve && n >= 4)
+                g.DrawCurve(pen, buffer, 0, n - 1, 0.45f);
+            else if (buffer.Length == n)
+                g.DrawLines(pen, buffer);
             else
-                g.DrawLines(pen, shadowPts);
+            {
+                var slice = new PointF[n];
+                Array.Copy(buffer, slice, n);
+                g.DrawLines(pen, slice);
+            }
         }
     }
 
     public static void DrawSoftPathShadow(Graphics g, GraphicsPath path, float extraSpread = 0f)
     {
-        foreach (var step in SoftShadowSteps)
+        for (int i = 0; i < SoftShadowSteps.Length; i++)
         {
-            using var brush = new SolidBrush(Color.FromArgb(step.alpha, 0, 0, 0));
-            var m = new System.Drawing.Drawing2D.Matrix();
+            var step = SoftShadowSteps[i];
+            using var m = new System.Drawing.Drawing2D.Matrix();
             m.Translate(step.dx, step.dy);
             if (step.dx > 0)
                 m.Scale(1f + extraSpread * 0.02f, 1f + extraSpread * 0.02f);
             using var shadowPath = (GraphicsPath)path.Clone();
             shadowPath.Transform(m);
-            g.FillPath(brush, shadowPath);
+            g.FillPath(SoftShadowBrushes[i], shadowPath);
         }
     }
 
     public static void DrawSoftEllipseShadow(Graphics g, float x, float y, float w, float h)
     {
-        foreach (var step in SoftShadowSteps)
+        for (int i = 0; i < SoftShadowSteps.Length; i++)
         {
-            using var brush = new SolidBrush(Color.FromArgb(step.alpha, 0, 0, 0));
-            g.FillEllipse(brush, x + step.dx, y + step.dy, w, h);
+            var step = SoftShadowSteps[i];
+            g.FillEllipse(SoftShadowBrushes[i], x + step.dx, y + step.dy, w, h);
         }
     }
 

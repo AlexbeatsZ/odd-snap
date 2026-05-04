@@ -40,6 +40,13 @@ public sealed class ColorHistoryEntry
     public DateTime CapturedAt { get; set; }
 }
 
+public sealed class CodeHistoryEntry
+{
+    public string Text { get; set; } = "";
+    public string Format { get; set; } = "";
+    public DateTime CapturedAt { get; set; }
+}
+
 public sealed partial class HistoryService : IDisposable
 {
     public static readonly string HistoryDir = Path.Combine(
@@ -69,6 +76,7 @@ public sealed partial class HistoryService : IDisposable
     private Dictionary<string, HistoryEntry> _entriesByPath = new(StringComparer.OrdinalIgnoreCase);
     private List<OcrHistoryEntry> _ocrEntries = new();
     private List<ColorHistoryEntry> _colorEntries = new();
+    private List<CodeHistoryEntry> _codeEntries = new();
     private IReadOnlyList<HistoryEntry>? _imageEntries;
     private IReadOnlyList<HistoryEntry>? _gifEntries;
     private IReadOnlyList<HistoryEntry>? _stickerEntries;
@@ -80,6 +88,7 @@ public sealed partial class HistoryService : IDisposable
     private bool _entriesRewritePending;
     private bool _ocrDirty;
     private bool _colorDirty;
+    private bool _codeDirty;
     private readonly Dictionary<string, HistoryEntry> _pendingEntryUpserts = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _pendingEntryDeletes = new(StringComparer.OrdinalIgnoreCase);
 
@@ -101,6 +110,7 @@ public sealed partial class HistoryService : IDisposable
     public IReadOnlyList<HistoryEntry> MediaEntries { get { lock (_gate) return _mediaEntries ??= _entries.Where(e => e.Kind is HistoryKind.Gif or HistoryKind.Video).ToList(); } }
     public IReadOnlyList<OcrHistoryEntry> OcrEntries { get { lock (_gate) return _ocrEntries.ToList(); } }
     public IReadOnlyList<ColorHistoryEntry> ColorEntries { get { lock (_gate) return _colorEntries.ToList(); } }
+    public IReadOnlyList<CodeHistoryEntry> CodeEntries { get { lock (_gate) return _codeEntries.ToList(); } }
 
     private void InvalidateFilteredCache()
     {
@@ -156,6 +166,7 @@ public sealed partial class HistoryService : IDisposable
             hash.Add(_entries.Count);
             hash.Add(_ocrEntries.Count);
             hash.Add(_colorEntries.Count);
+            hash.Add(_codeEntries.Count);
 
             return hash.ToHashCode().ToString("X8");
         }
@@ -354,8 +365,8 @@ public sealed partial class HistoryService : IDisposable
         lock (_gate)
         {
             _ocrEntries.Insert(0, new OcrHistoryEntry { Text = text, CapturedAt = DateTime.Now });
-            while (_ocrEntries.Count > 200)
-                _ocrEntries.RemoveAt(_ocrEntries.Count - 1);
+            if (_ocrEntries.Count > 200)
+                _ocrEntries.RemoveRange(200, _ocrEntries.Count - 200);
             SaveOcrIndex();
         }
         NotifyChanged();
@@ -412,14 +423,13 @@ public sealed partial class HistoryService : IDisposable
 
     public void DeleteOcrEntries(IEnumerable<OcrHistoryEntry> entries)
     {
-        var list = entries.Distinct().ToList();
-        if (list.Count == 0)
+        var set = entries as HashSet<OcrHistoryEntry> ?? new HashSet<OcrHistoryEntry>(entries);
+        if (set.Count == 0)
             return;
 
         lock (_gate)
         {
-            foreach (var entry in list)
-                _ocrEntries.Remove(entry);
+            _ocrEntries.RemoveAll(set.Contains);
             SaveOcrIndex();
         }
         NotifyChanged();
@@ -430,8 +440,8 @@ public sealed partial class HistoryService : IDisposable
         lock (_gate)
         {
             _colorEntries.Insert(0, new ColorHistoryEntry { Hex = hex, CapturedAt = DateTime.Now });
-            while (_colorEntries.Count > 200)
-                _colorEntries.RemoveAt(_colorEntries.Count - 1);
+            if (_colorEntries.Count > 200)
+                _colorEntries.RemoveRange(200, _colorEntries.Count - 200);
             SaveColorIndex();
         }
         NotifyChanged();
@@ -449,15 +459,58 @@ public sealed partial class HistoryService : IDisposable
 
     public void DeleteColorEntries(IEnumerable<ColorHistoryEntry> entries)
     {
-        var list = entries.Distinct().ToList();
-        if (list.Count == 0)
+        var set = entries as HashSet<ColorHistoryEntry> ?? new HashSet<ColorHistoryEntry>(entries);
+        if (set.Count == 0)
             return;
 
         lock (_gate)
         {
-            foreach (var entry in list)
-                _colorEntries.Remove(entry);
+            _colorEntries.RemoveAll(set.Contains);
             SaveColorIndex();
+        }
+        NotifyChanged();
+    }
+
+    public void SaveCodeEntry(string text, string format)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        var normalizedFormat = format ?? "";
+        lock (_gate)
+        {
+            _codeEntries.RemoveAll(e =>
+                string.Equals(e.Text, text, StringComparison.Ordinal) &&
+                string.Equals(e.Format, normalizedFormat, StringComparison.OrdinalIgnoreCase));
+
+            _codeEntries.Insert(0, new CodeHistoryEntry { Text = text, Format = normalizedFormat, CapturedAt = DateTime.Now });
+            if (_codeEntries.Count > 200)
+                _codeEntries.RemoveRange(200, _codeEntries.Count - 200);
+            SaveCodeIndex();
+        }
+        NotifyChanged();
+    }
+
+    public void DeleteCodeEntry(CodeHistoryEntry entry)
+    {
+        lock (_gate)
+        {
+            _codeEntries.Remove(entry);
+            SaveCodeIndex();
+        }
+        NotifyChanged();
+    }
+
+    public void DeleteCodeEntries(IEnumerable<CodeHistoryEntry> entries)
+    {
+        var set = entries as HashSet<CodeHistoryEntry> ?? new HashSet<CodeHistoryEntry>(entries);
+        if (set.Count == 0)
+            return;
+
+        lock (_gate)
+        {
+            _codeEntries.RemoveAll(set.Contains);
+            SaveCodeIndex();
         }
         NotifyChanged();
     }
@@ -465,38 +518,14 @@ public sealed partial class HistoryService : IDisposable
     public void ClearImages()
     {
         lock (_gate)
-        {
-            var images = _entries.Where(e => e.Kind == HistoryKind.Image).ToList();
-            foreach (var e in images)
-            {
-                try { File.Delete(e.FilePath); } catch { }
-                TryDeleteManagedThumbnail_NoLock(e.FilePath);
-                _entries.Remove(e);
-                _entriesByPath.Remove(e.FilePath);
-            }
-            InvalidateFilteredCache();
-            QueueEntryDeletes_NoLock(images.Select(entry => entry.FilePath));
-            ScheduleFlush_NoLock();
-        }
+            ClearEntriesByKind_NoLock(HistoryKind.Image);
         NotifyChanged();
     }
 
     public void ClearGifs()
     {
         lock (_gate)
-        {
-            var gifs = _entries.Where(e => e.Kind == HistoryKind.Gif).ToList();
-            foreach (var e in gifs)
-            {
-                try { File.Delete(e.FilePath); } catch { }
-                TryDeleteManagedThumbnail_NoLock(e.FilePath);
-                _entries.Remove(e);
-                _entriesByPath.Remove(e.FilePath);
-            }
-            InvalidateFilteredCache();
-            QueueEntryDeletes_NoLock(gifs.Select(entry => entry.FilePath));
-            ScheduleFlush_NoLock();
-        }
+            ClearEntriesByKind_NoLock(HistoryKind.Gif);
         NotifyChanged();
     }
 
@@ -516,6 +545,16 @@ public sealed partial class HistoryService : IDisposable
         {
             _colorEntries.Clear();
             SaveColorIndex();
+        }
+        NotifyChanged();
+    }
+
+    public void ClearCodes()
+    {
+        lock (_gate)
+        {
+            _codeEntries.Clear();
+            SaveCodeIndex();
         }
         NotifyChanged();
     }
@@ -541,20 +580,31 @@ public sealed partial class HistoryService : IDisposable
     public void ClearStickers()
     {
         lock (_gate)
-        {
-            var stickers = _entries.Where(e => e.Kind == HistoryKind.Sticker).ToList();
-            foreach (var e in stickers)
-            {
-                try { File.Delete(e.FilePath); } catch { }
-                TryDeleteManagedThumbnail_NoLock(e.FilePath);
-                _entries.Remove(e);
-                _entriesByPath.Remove(e.FilePath);
-            }
-            InvalidateFilteredCache();
-            QueueEntryDeletes_NoLock(stickers.Select(entry => entry.FilePath));
-            ScheduleFlush_NoLock();
-        }
+            ClearEntriesByKind_NoLock(HistoryKind.Sticker);
         NotifyChanged();
+    }
+
+    private void ClearEntriesByKind_NoLock(HistoryKind kind)
+    {
+        var removedPaths = new List<string>();
+        _entries.RemoveAll(e =>
+        {
+            if (e.Kind != kind)
+                return false;
+
+            try { File.Delete(e.FilePath); } catch { }
+            TryDeleteManagedThumbnail_NoLock(e.FilePath);
+            _entriesByPath.Remove(e.FilePath);
+            removedPaths.Add(e.FilePath);
+            return true;
+        });
+
+        if (removedPaths.Count == 0)
+            return;
+
+        InvalidateFilteredCache();
+        QueueEntryDeletes_NoLock(removedPaths);
+        ScheduleFlush_NoLock();
     }
 
     public void SaveEntry(HistoryEntry entry)

@@ -21,8 +21,10 @@ namespace OddSnap.Helpers;
 public static class StreamlineIcons
 {
     private const int ViewBoxSize = 20;
+    private const int GdiBitmapCacheLimit = 256;
     private static readonly ConcurrentDictionary<string, BitmapSource?> WpfCache = new();
     private static readonly ConcurrentDictionary<string, Geometry?> GeometryCache = new();
+    private static readonly ConcurrentDictionary<string, Bitmap> GdiBitmapCache = new();
 
     public static void Preload()
     {
@@ -38,6 +40,11 @@ public static class StreamlineIcons
         if (source is null)
             return null;
 
+        return CreateGdiBitmap(source);
+    }
+
+    private static Bitmap CreateGdiBitmap(BitmapSource source)
+    {
         var bitmap = new Bitmap(source.PixelWidth, source.PixelHeight, DrawingPixelFormat.Format32bppPArgb);
         var rect = new DrawingRectangle(0, 0, bitmap.Width, bitmap.Height);
         var data = bitmap.LockBits(rect, ImageLockMode.WriteOnly, DrawingPixelFormat.Format32bppPArgb);
@@ -53,6 +60,35 @@ public static class StreamlineIcons
         return bitmap;
     }
 
+    private static Bitmap? GetCachedGdiBitmap(string id, DrawingColor color, int size, bool active)
+    {
+        var key = $"{id}|{active}|{color.ToArgb()}|{size}";
+        if (GdiBitmapCache.TryGetValue(key, out var cached))
+            return cached;
+
+        var source = RenderWpf(id, color, size, active);
+        if (source is null)
+            return null;
+
+        var fresh = CreateGdiBitmap(source);
+        if (GdiBitmapCache.Count >= GdiBitmapCacheLimit)
+        {
+            // Bounded cache: drop everything when full. Icons re-render lazily.
+            foreach (var entry in GdiBitmapCache)
+            {
+                if (GdiBitmapCache.TryRemove(entry.Key, out var removed))
+                    removed.Dispose();
+            }
+        }
+
+        if (GdiBitmapCache.TryAdd(key, fresh))
+            return fresh;
+
+        // Lost the add race: dispose ours and return whatever the cache holds.
+        fresh.Dispose();
+        return GdiBitmapCache.TryGetValue(key, out var winner) ? winner : null;
+    }
+
     public static bool HasIcon(string id) => FluentIconData.Icons.ContainsKey(id);
 
     public static void DrawIcon(DrawingGraphics g, string id, RectangleF bounds, DrawingColor color, float iconInset = 7f, bool active = false)
@@ -60,7 +96,7 @@ public static class StreamlineIcons
         int width = Math.Max(1, (int)Math.Ceiling(bounds.Width - iconInset * 2f));
         int height = Math.Max(1, (int)Math.Ceiling(bounds.Height - iconInset * 2f));
         int size = Math.Max(width, height);
-        using var bitmap = RenderBitmap(id, color, size, active);
+        var bitmap = GetCachedGdiBitmap(id, color, size, active);
         if (bitmap is null)
             return;
 

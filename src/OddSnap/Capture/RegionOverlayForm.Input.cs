@@ -205,6 +205,8 @@ public sealed partial class RegionOverlayForm
                 _selectHandleBounds = GetAnnotationBounds(_undoStack[_selectedAnnotationIndex]);
                 _selectResizeOriginalAnnotation = _undoStack[_selectedAnnotationIndex];
                 _selectPreviewAnnotation = _selectResizeOriginalAnnotation;
+                _renderSkipIndex = _selectedAnnotationIndex;
+                MarkCommittedAnnotationsDirty();
                 ClearCrosshairGuides();
                 Invalidate();
                 return;
@@ -219,6 +221,8 @@ public sealed partial class RegionOverlayForm
                 _selectPreviewAnnotation = _undoStack[hit];
                 _selectDragStart = e.Location;
                 _selectDragOffset = new Point(e.Location.X - bounds.X, e.Location.Y - bounds.Y);
+                _renderSkipIndex = hit;
+                MarkCommittedAnnotationsDirty();
                 ClearCrosshairGuides();
                 Invalidate();
             }

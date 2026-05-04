@@ -10,6 +10,9 @@ internal static class SelectionSizeReadout
     private const int CursorOffsetY = 7;
     private const int Gap = 3;
 
+    private static readonly SolidBrush HaloBrush = new(Color.FromArgb(160, 0, 0, 0));
+    private static readonly SolidBrush TextBrush = new(Color.FromArgb(245, 255, 255, 255));
+
     public static Rectangle GetBounds(Point cursor, Rectangle selection, Font font, Rectangle clientBounds, IReadOnlyList<string>? details = null)
     {
         if (selection.Width <= 2 || selection.Height <= 2)
@@ -31,14 +34,12 @@ internal static class SelectionSizeReadout
         var lines = BuildLines(selection, details);
         var size = Measure(lines, font);
         var textRect = GetTextBounds(cursor, size, clientBounds);
-        using var haloBrush = new SolidBrush(Color.FromArgb(160, 0, 0, 0));
-        using var textBrush = new SolidBrush(Color.FromArgb(245, 255, 255, 255));
 
         int lineHeight = GetLineHeight(font);
         for (int i = 0; i < lines.Length; i++)
         {
             var point = new PointF(textRect.X, textRect.Y + (lineHeight - 1) * i);
-            DrawReadableLine(g, lines[i], font, haloBrush, textBrush, point);
+            DrawReadableLine(g, lines[i], font, HaloBrush, TextBrush, point);
         }
 
         g.TextRenderingHint = oldTextHint;

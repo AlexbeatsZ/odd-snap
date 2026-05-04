@@ -245,21 +245,52 @@ public sealed partial class RegionOverlayForm
         ambient.Offset(0, yOffset + 1f);
         int ambientAlpha = Math.Clamp((int)(alpha * 0.10f), 1, 255);
         using (var path = RRect(ambient, radius + 8f))
-        using (var brush = new SolidBrush(Color.FromArgb(ambientAlpha, 0, 0, 0)))
-            g.FillPath(brush, path);
+            g.FillPath(SketchRenderer.GetToolColorBrush(Color.FromArgb(ambientAlpha, 0, 0, 0)), path);
 
         var directional = rect;
         directional.Inflate(3f, 3f);
         directional.Offset(0, yOffset + 4f);
         int dirAlpha = Math.Clamp((int)(alpha * 0.22f), 1, 255);
         using (var path = RRect(directional, radius + 3f))
-        using (var brush = new SolidBrush(Color.FromArgb(dirAlpha, 0, 0, 0)))
-            g.FillPath(brush, path);
+            g.FillPath(SketchRenderer.GetToolColorBrush(Color.FromArgb(dirAlpha, 0, 0, 0)), path);
 
         g.SmoothingMode = oldSmooth;
         g.CompositingMode = oldComp;
         g.CompositingQuality = oldCompQual;
         g.PixelOffsetMode = oldPix;
+    }
+
+    private static readonly Pen RulerShadowPen = new(Color.FromArgb(70, 0, 0, 0), 3f)
+        { StartCap = LineCap.Flat, EndCap = LineCap.Flat };
+    private static Pen? _rulerLinePen;
+    private static Pen? _rulerTickPen;
+    private static SolidBrush? _rulerBgBrush;
+    private static Pen? _rulerBorderPen;
+    private static SolidBrush? _rulerFgBrush;
+    private static Font? _rulerFont;
+    private static int _rulerThemeKey;
+
+    private static void EnsureRulerChrome()
+    {
+        var text = UiChrome.SurfaceTextPrimary;
+        var pill = UiChrome.SurfacePill;
+        var border = UiChrome.SurfaceBorderSubtle;
+        int key = HashCode.Combine(text.ToArgb(), pill.ToArgb(), border.ToArgb());
+        if (_rulerLinePen != null && _rulerThemeKey == key) return;
+
+        _rulerLinePen?.Dispose();
+        _rulerTickPen?.Dispose();
+        _rulerBgBrush?.Dispose();
+        _rulerBorderPen?.Dispose();
+        _rulerFgBrush?.Dispose();
+
+        _rulerLinePen = new Pen(text, 1.8f) { StartCap = LineCap.Flat, EndCap = LineCap.Flat };
+        _rulerTickPen = new Pen(text, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        _rulerBgBrush = new SolidBrush(pill);
+        _rulerBorderPen = new Pen(border, 1.4f);
+        _rulerFgBrush = new SolidBrush(text);
+        _rulerFont ??= UiChrome.ChromeFont(9.5f);
+        _rulerThemeKey = key;
     }
 
     private void PaintRuler(Graphics g, Point from, Point to)
@@ -276,35 +307,24 @@ public sealed partial class RegionOverlayForm
         if (dist > 1) { nx = -dy / dist; ny = dx / dist; }
         const float tickHalf = 6f;
 
-        using var shadowPen = new Pen(Color.FromArgb(70, 0, 0, 0), 3f)
-            { StartCap = LineCap.Flat, EndCap = LineCap.Flat };
-        g.DrawLine(shadowPen, from.X + 1, from.Y + 1, to.X + 1, to.Y + 1);
+        EnsureRulerChrome();
 
-        using var pen = new Pen(UiChrome.SurfaceTextPrimary, 1.8f)
-            { StartCap = LineCap.Flat, EndCap = LineCap.Flat };
-        g.DrawLine(pen, from, to);
-
-        using var tickPen = new Pen(UiChrome.SurfaceTextPrimary, 1.8f)
-            { StartCap = LineCap.Round, EndCap = LineCap.Round };
-        g.DrawLine(tickPen, from.X - nx * tickHalf, from.Y - ny * tickHalf,
+        g.DrawLine(RulerShadowPen, from.X + 1, from.Y + 1, to.X + 1, to.Y + 1);
+        g.DrawLine(_rulerLinePen!, from, to);
+        g.DrawLine(_rulerTickPen!, from.X - nx * tickHalf, from.Y - ny * tickHalf,
                             from.X + nx * tickHalf, from.Y + ny * tickHalf);
-        g.DrawLine(tickPen, to.X - nx * tickHalf, to.Y - ny * tickHalf,
+        g.DrawLine(_rulerTickPen!, to.X - nx * tickHalf, to.Y - ny * tickHalf,
                             to.X + nx * tickHalf, to.Y + ny * tickHalf);
 
         string text = $"{(int)dist}px  \u00b7  {Math.Abs(dx):0} \u00d7 {Math.Abs(dy):0}  \u00b7  {angle:0.0}\u00b0";
-        using var font = UiChrome.ChromeFont(9.5f);
-        var sz = g.MeasureString(text, font);
+        var sz = g.MeasureString(text, _rulerFont!);
         var mid = new PointF((from.X + to.X) / 2f, (from.Y + to.Y) / 2f);
         var label = new RectangleF(mid.X - sz.Width / 2f - 10, mid.Y - sz.Height - 14, sz.Width + 20, sz.Height + 10);
         PaintShadow(g, label, 8f, 48, 1f);
         using var path = RRect(label, 8f);
-        using var bg = new SolidBrush(UiChrome.SurfacePill);
-        using var border = new Pen(UiChrome.SurfaceBorderSubtle, 1.4f);
-        g.FillPath(bg, path);
-        g.DrawPath(border, path);
-
-        using var fg = new SolidBrush(UiChrome.SurfaceTextPrimary);
-        g.DrawString(text, font, fg, label.X + 10, label.Y + 5);
+        g.FillPath(_rulerBgBrush!, path);
+        g.DrawPath(_rulerBorderPen!, path);
+        g.DrawString(text, _rulerFont!, _rulerFgBrush!, label.X + 10, label.Y + 5);
 
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.SystemDefault;
         g.SmoothingMode = SmoothingMode.Default;

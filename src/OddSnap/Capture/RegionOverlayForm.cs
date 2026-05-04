@@ -120,6 +120,11 @@ public sealed partial class RegionOverlayForm : Form
     private Point _rulerStart;
     private bool _isRulerDragging;
 
+    // Tracks the union of pixels painted by the most recent PaintAnnotations call,
+    // so InvalidateLivePreview can always re-clear the previous frame's live overlay
+    // even when a tool's per-frame bounds underestimate the actual paint extent.
+    private Rectangle _lastLivePreviewPaintExtent;
+
     // Curved arrows: freehand path with arrowhead at end
     private List<Point>? _currentCurvedArrow;
     private bool _isCurvedArrowDragging;
@@ -158,6 +163,11 @@ public sealed partial class RegionOverlayForm : Form
     private Rectangle _selectHandleBounds; // cached bounds for handle hit-testing
     private Annotation? _selectResizeOriginalAnnotation;
     private Annotation? _selectPreviewAnnotation;
+    // Index in _undoStack to skip when rebuilding the committed bitmap.
+    // While a select drag/resize is active, the live preview is the only
+    // rendering of that annotation — without skipping, you see a ghost at
+    // the original position.
+    private int _renderSkipIndex = -1;
 
     // Smart eraser state
     private Point _eraserStart;

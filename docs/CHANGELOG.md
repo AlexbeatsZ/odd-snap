@@ -1,3 +1,18 @@
+# OddSnap v0.8.34
+
+## Added
+- add a dedicated Codes history page split out from the Text history view.
+
+## Changed
+- match history filter dropdowns to the rest of Settings so they look consistent.
+- shrink website screenshots by replacing PNG sources with WebP files.
+- simplify the website icon and shape context modules.
+
+## Fixed
+- eliminate paint smears around the ruler and other annotation tools by tracking the live preview's full paint extent each frame.
+- show a close button on every toast, including text-only and inline-color toasts.
+- restore page-title clearance on the History tab so the dropdown row no longer sits behind the heading.
+
 # OddSnap v0.8.33
 
 ## Added

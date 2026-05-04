@@ -10,13 +10,21 @@ namespace OddSnap.UI;
 
 public partial class SettingsWindow
 {
+    private static readonly System.Windows.Media.Brush HistoryCardIdleBrush = CreateFrozenHistoryBrush(System.Windows.Media.Color.FromArgb(12, 255, 255, 255));
+    private static readonly System.Windows.Media.Brush HistoryCardHoverBrush = CreateFrozenHistoryBrush(System.Windows.Media.Color.FromArgb(24, 255, 255, 255));
+
+    private static System.Windows.Media.Brush CreateFrozenHistoryBrush(System.Windows.Media.Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
+
     private string _ocrSearchQuery = "";
-    private UIElement? _ocrSearchSurface;
     private List<OcrHistoryEntry> _filteredOcrEntries = new();
     private int _ocrRenderCount;
     private DateTime? _ocrLastRenderedDate;
     private string _colorSearchQuery = "";
-    private UIElement? _colorSearchSurface;
     private List<ColorHistoryEntry> _filteredColorEntries = new();
     private int _colorRenderCount;
     private DateTime? _colorLastRenderedDate;
@@ -40,8 +48,8 @@ public partial class SettingsWindow
         PruneOcrSearchCache(allEntries);
 
         var query = _ocrSearchQuery.Trim();
-        var entries = string.IsNullOrWhiteSpace(query)
-            ? allEntries
+        List<OcrHistoryEntry> entries = string.IsNullOrWhiteSpace(query)
+            ? new List<OcrHistoryEntry>(allEntries)
             : allEntries.Where(e => GetOcrSearchText(e).Contains(query, StringComparison.OrdinalIgnoreCase)).ToList();
 
         HistoryEmptyText.Visibility = entries.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -54,10 +62,10 @@ public partial class SettingsWindow
             HistoryCountText.Text = $"{entries.Count} of {allEntries.Count} text capture{(allEntries.Count == 1 ? "" : "s")}";
 
         DeleteSelectedBtn.Visibility = _selectMode && HistoryCategoryCombo.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
-        _filteredOcrEntries = entries.ToList();
+        _filteredOcrEntries = entries;
         _ocrRenderCount = Math.Min(HistoryInitialPageSize, _filteredOcrEntries.Count);
         _ocrLastRenderedDate = null;
-        AppendOcrHistoryEntries(_filteredOcrEntries.Take(_ocrRenderCount));
+        AppendOcrHistoryEntries(_filteredOcrEntries, 0, _ocrRenderCount);
         sw.Stop();
         AppDiagnostics.LogInfo(
             "history.load-text",
@@ -73,8 +81,8 @@ public partial class SettingsWindow
         PruneColorSearchCache(allEntries);
         var query = _colorSearchQuery.Trim();
         var queryTerms = SplitHistorySearchTerms(query);
-        var entries = string.IsNullOrWhiteSpace(query)
-            ? allEntries
+        List<ColorHistoryEntry> entries = string.IsNullOrWhiteSpace(query)
+            ? new List<ColorHistoryEntry>(allEntries)
             : allEntries.Where(entry => ColorMatchesCachedTerms(entry, queryTerms)).ToList();
 
         HistoryEmptyText.Visibility = entries.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -84,10 +92,10 @@ public partial class SettingsWindow
             ? $"{entries.Count} color{(entries.Count == 1 ? "" : "s")}"
             : $"{entries.Count} of {allEntries.Count} color{(allEntries.Count == 1 ? "" : "s")}";
         DeleteSelectedBtn.Visibility = _selectMode && HistoryCategoryCombo.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
-        _filteredColorEntries = entries.ToList();
+        _filteredColorEntries = entries;
         _colorRenderCount = Math.Min(HistoryInitialPageSize, _filteredColorEntries.Count);
         _colorLastRenderedDate = null;
-        AppendColorHistoryEntries(_filteredColorEntries.Take(_colorRenderCount));
+        AppendColorHistoryEntries(_filteredColorEntries, 0, _colorRenderCount);
         sw.Stop();
         AppDiagnostics.LogInfo(
             "history.load-colors",
@@ -114,7 +122,7 @@ public partial class SettingsWindow
         var previousOffset = TextPanel.VerticalOffset;
         var previousCount = _ocrRenderCount;
         _ocrRenderCount = Math.Min(_ocrRenderCount + HistoryAppendPageSize, _filteredOcrEntries.Count);
-        AppendOcrHistoryEntries(_filteredOcrEntries.Skip(previousCount).Take(_ocrRenderCount - previousCount));
+        AppendOcrHistoryEntries(_filteredOcrEntries, previousCount, _ocrRenderCount - previousCount);
         _ = Dispatcher.BeginInvoke(() =>
         {
             if (IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 1)
@@ -130,52 +138,12 @@ public partial class SettingsWindow
         var previousOffset = ColorsPanel.VerticalOffset;
         var previousCount = _colorRenderCount;
         _colorRenderCount = Math.Min(_colorRenderCount + HistoryAppendPageSize, _filteredColorEntries.Count);
-        AppendColorHistoryEntries(_filteredColorEntries.Skip(previousCount).Take(_colorRenderCount - previousCount));
+        AppendColorHistoryEntries(_filteredColorEntries, previousCount, _colorRenderCount - previousCount);
         _ = Dispatcher.BeginInvoke(() =>
         {
             if (IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 3)
                 ColorsPanel.ScrollToVerticalOffset(previousOffset);
         }, System.Windows.Threading.DispatcherPriority.Background);
-    }
-
-    private void EnsureOcrSearchSurface()
-    {
-        if (_ocrSearchSurface != null && OcrStack.Children.Count > 0 && OcrStack.Children[0] == _ocrSearchSurface)
-            return;
-
-        OcrStack.Children.Clear();
-        _ocrSearchSurface = CreateHistorySearchSurface(
-            "Search text captures...",
-            _ocrSearchQuery,
-            text =>
-            {
-                _ocrSearchQuery = text;
-                _ocrSearchDebounceTimer.Stop();
-                _ocrSearchDebounceTimer.Tick -= FlushOcrSearchDebounce;
-                _ocrSearchDebounceTimer.Tick += FlushOcrSearchDebounce;
-                _ocrSearchDebounceTimer.Start();
-            });
-        OcrStack.Children.Add(_ocrSearchSurface);
-    }
-
-    private void EnsureColorSearchSurface()
-    {
-        if (_colorSearchSurface != null && ColorStack.Children.Count > 0 && ColorStack.Children[0] == _colorSearchSurface)
-            return;
-
-        ColorStack.Children.Clear();
-        _colorSearchSurface = CreateHistorySearchSurface(
-            "Search hex, RGB, or color names...",
-            _colorSearchQuery,
-            text =>
-            {
-                _colorSearchQuery = text;
-                _colorSearchDebounceTimer.Stop();
-                _colorSearchDebounceTimer.Tick -= FlushColorSearchDebounce;
-                _colorSearchDebounceTimer.Tick += FlushColorSearchDebounce;
-                _colorSearchDebounceTimer.Start();
-            });
-        ColorStack.Children.Add(_colorSearchSurface);
     }
 
     private void FlushOcrSearchDebounce(object? sender, EventArgs e)
@@ -192,100 +160,12 @@ public partial class SettingsWindow
             LoadColorHistory();
     }
 
-    private UIElement CreateHistorySearchSurface(string placeholderText, string initialText, Action<string> onTextChanged)
+    private void AppendOcrHistoryEntries(IReadOnlyList<OcrHistoryEntry> entries, int start, int count)
     {
-        var outer = new Grid { Margin = new Thickness(0, 0, 0, 8) };
-        var border = new Border
+        var end = start + count;
+        for (int i = start; i < end; i++)
         {
-            Background = TryFindResource("ThemeInputBackgroundBrush") as System.Windows.Media.Brush
-                ?? new SolidColorBrush(System.Windows.Media.Color.FromRgb(30, 30, 30)),
-            BorderBrush = TryFindResource("ThemeInputBorderBrush") as System.Windows.Media.Brush
-                ?? new SolidColorBrush(System.Windows.Media.Color.FromArgb(21, 255, 255, 255)),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(7),
-            Padding = new Thickness(10, 6, 10, 6)
-        };
-
-        var layout = new Grid();
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-        var iconColor = Theme.IsDark
-            ? System.Drawing.Color.FromArgb(210, 255, 255, 255)
-            : System.Drawing.Color.FromArgb(170, 0, 0, 0);
-        layout.Children.Add(new System.Windows.Controls.Image
-        {
-            Source = Helpers.FluentIcons.RenderWpf("search", iconColor, 18),
-            Width = 14,
-            Height = 14,
-            Stretch = Stretch.Uniform,
-            VerticalAlignment = VerticalAlignment.Center,
-            Opacity = 0.35,
-        });
-
-        var inputHost = new Grid { Margin = new Thickness(8, 0, 0, 0) };
-        Grid.SetColumn(inputHost, 1);
-
-        var searchBox = new System.Windows.Controls.TextBox
-        {
-            Text = initialText,
-            BorderThickness = new Thickness(0),
-            Background = System.Windows.Media.Brushes.Transparent,
-            FontSize = 12,
-            Padding = new Thickness(0),
-            VerticalContentAlignment = VerticalAlignment.Center,
-            Foreground = Theme.Brush(Theme.TextPrimary),
-            CaretBrush = Theme.Brush(Theme.TextPrimary)
-        };
-
-        var placeholder = new TextBlock
-        {
-            Text = placeholderText,
-            FontSize = 12,
-            Opacity = 0.28,
-            VerticalAlignment = VerticalAlignment.Center,
-            IsHitTestVisible = false,
-            Visibility = string.IsNullOrWhiteSpace(initialText) ? Visibility.Visible : Visibility.Collapsed,
-            Foreground = Theme.Brush(Theme.TextPrimary)
-        };
-
-        inputHost.Children.Add(searchBox);
-        inputHost.Children.Add(placeholder);
-        layout.Children.Add(inputHost);
-        border.Child = layout;
-        outer.Children.Add(border);
-
-        searchBox.TextChanged += (_, _) =>
-        {
-            var text = searchBox.Text ?? "";
-            placeholder.Visibility = string.IsNullOrWhiteSpace(text) ? Visibility.Visible : Visibility.Collapsed;
-            onTextChanged(text);
-        };
-        searchBox.GotKeyboardFocus += (_, _) => placeholder.Visibility = Visibility.Collapsed;
-        searchBox.LostKeyboardFocus += (_, _) =>
-            placeholder.Visibility = string.IsNullOrWhiteSpace(searchBox.Text) ? Visibility.Visible : Visibility.Collapsed;
-
-        return outer;
-    }
-
-    private static void ClearHistoryListPreservingSearch(StackPanel target, UIElement? searchGrid)
-    {
-        if (searchGrid != null && target.Children.Count > 0 && target.Children[0] == searchGrid)
-        {
-            while (target.Children.Count > 1)
-                target.Children.RemoveAt(target.Children.Count - 1);
-            return;
-        }
-
-        target.Children.Clear();
-        if (searchGrid != null)
-            target.Children.Add(searchGrid);
-    }
-
-    private void AppendOcrHistoryEntries(IEnumerable<OcrHistoryEntry> entries)
-    {
-        foreach (var entry in entries)
-        {
+            var entry = entries[i];
             AppendSectionHeaderIfNeeded(OcrStack, entry.CapturedAt.Date, ref _ocrLastRenderedDate);
             OcrStack.Children.Add(GetOrCreateOcrHistoryCard(entry));
         }
@@ -314,12 +194,12 @@ public partial class SettingsWindow
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(12),
             Margin = new Thickness(0, 0, 0, 6),
-            Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(12, 255, 255, 255)),
+            Background = HistoryCardIdleBrush,
             DataContext = entry
         };
 
-        card.MouseEnter += (_, _) => card.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(24, 255, 255, 255));
-        card.MouseLeave += (_, _) => card.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(12, 255, 255, 255));
+        card.MouseEnter += (_, _) => card.Background = HistoryCardHoverBrush;
+        card.MouseLeave += (_, _) => card.Background = HistoryCardIdleBrush;
 
         var capturedText = entry.Text;
         bool isLong = capturedText.Length > 220 || capturedText.Count(ch => ch == '\n') > 3;
@@ -426,10 +306,12 @@ public partial class SettingsWindow
         return card;
     }
 
-    private void AppendColorHistoryEntries(IEnumerable<ColorHistoryEntry> entries)
+    private void AppendColorHistoryEntries(IReadOnlyList<ColorHistoryEntry> entries, int start, int count)
     {
-        foreach (var entry in entries)
+        var end = start + count;
+        for (int i = start; i < end; i++)
         {
+            var entry = entries[i];
             AppendSectionHeaderIfNeeded(ColorStack, entry.CapturedAt.Date, ref _colorLastRenderedDate);
             ColorStack.Children.Add(GetOrCreateColorHistoryCard(entry));
         }
@@ -468,13 +350,13 @@ public partial class SettingsWindow
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(10, 8, 12, 8),
             Margin = new Thickness(0, 0, 0, 3),
-            Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(12, 255, 255, 255)),
+            Background = HistoryCardIdleBrush,
             Cursor = System.Windows.Input.Cursors.Hand,
             DataContext = entry
         };
 
-        card.MouseEnter += (_, _) => card.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(24, 255, 255, 255));
-        card.MouseLeave += (_, _) => card.Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(12, 255, 255, 255));
+        card.MouseEnter += (_, _) => card.Background = HistoryCardHoverBrush;
+        card.MouseLeave += (_, _) => card.Background = HistoryCardIdleBrush;
 
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });

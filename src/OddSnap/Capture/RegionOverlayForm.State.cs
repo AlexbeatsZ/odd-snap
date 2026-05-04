@@ -328,7 +328,7 @@ public sealed partial class RegionOverlayForm
         ArrowAnnotation arr => RectFromPoints(arr.From, arr.To, 8),
         CurvedArrowAnnotation ca => BoundsOfPoints(ca.Points, 8),
         LineAnnotation ln => RectFromPoints(ln.From, ln.To, 6),
-        RulerAnnotation ru => RectFromPoints(ru.From, ru.To, 10),
+        RulerAnnotation ru => GetRulerPaintBounds(ru.From, ru.To),
         DrawStroke ds => BoundsOfPoints(ds.Points, 4),
         BlurRect br => br.Rect,
         HighlightAnnotation hl => hl.Rect,
@@ -480,6 +480,11 @@ public sealed partial class RegionOverlayForm
         }
 
         _selectPreviewAnnotation = null;
+        if (_renderSkipIndex >= 0)
+        {
+            _renderSkipIndex = -1;
+            MarkCommittedAnnotationsDirty();
+        }
     }
 
     private Annotation RemoveLastAnnotation()

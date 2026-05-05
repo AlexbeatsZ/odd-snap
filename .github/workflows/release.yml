@@ -285,6 +285,7 @@ jobs:
           body_path: dist/RELEASE_BODY.md
 
       - name: Submit release to WinGet
+        continue-on-error: true
         shell: pwsh
         env:
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}

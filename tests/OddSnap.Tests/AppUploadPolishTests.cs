@@ -139,14 +139,14 @@ public sealed class AppUploadPolishTests
         Assert.Contains("Saved to {savedFileName}", helperBlock);
 
         var uploadBlock = GetMethodBlock(source, "private async Task UploadFileAsync(string filePath, string label, Services.HistoryEntry? historyEntry = null)");
-        var failureIndex = uploadBlock.IndexOf("else\n            {", StringComparison.Ordinal);
-        var providerIndex = uploadBlock.IndexOf("var providerName = UploadService.GetName(dest);", failureIndex, StringComparison.Ordinal);
-        var logIndex = uploadBlock.IndexOf("AppDiagnostics.LogWarning(\"upload.toast-failed\"", providerIndex, StringComparison.Ordinal);
+        var successIndex = uploadBlock.IndexOf("if (result.Success)", StringComparison.Ordinal);
+        var logIndex = uploadBlock.IndexOf("AppDiagnostics.LogWarning(\"upload.toast-failed\"", successIndex, StringComparison.Ordinal);
+        var providerIndex = uploadBlock.LastIndexOf("var providerName = UploadService.GetName(dest);", logIndex, StringComparison.Ordinal);
         var saveFailureIndex = uploadBlock.IndexOf("SaveUploadFailure(filePath, historyEntry, providerName, errMsg);", providerIndex, StringComparison.Ordinal);
         var bodyIndex = uploadBlock.IndexOf("var body = BuildUploadFailureToastBody(saved, providerName, errMsg, result.IsRateLimit);", saveFailureIndex, StringComparison.Ordinal);
         var toastIndex = uploadBlock.IndexOf("ToastWindow.ShowError(errTitle, body, filePath);", bodyIndex, StringComparison.Ordinal);
 
-        Assert.True(providerIndex > failureIndex, "Upload failure should resolve the provider once for history and feedback.");
+        Assert.True(providerIndex > successIndex, "Upload failure should resolve the provider once for history and feedback.");
         Assert.True(logIndex > providerIndex, "Upload failure diagnostics should use the resolved provider.");
         Assert.True(saveFailureIndex > providerIndex, "Upload failure should save provider-specific history status.");
         Assert.True(bodyIndex > saveFailureIndex, "Upload failure toast should include provider-specific recovery after saving history.");

@@ -136,6 +136,7 @@ public sealed class AppSettings
     public int OcrModelQuality { get; set; } // 0 = Fast (~1 MB), 1 = Standard (~4 MB)
     public string OcrDefaultTranslateFrom { get; set; } = "auto";
     public string OcrDefaultTranslateTo { get; set; } = "auto";
+    public bool OcrAutoCopyToClipboard { get; set; }
     public string? GoogleTranslateApiKey { get; set; }
     public bool TranslationRuntimeInstalled { get; set; }
     public int TranslationModel { get; set; } = 2; // 0 = Argos, 1 = Google, 2 = Open-source local

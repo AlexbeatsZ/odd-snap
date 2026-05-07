@@ -14,11 +14,13 @@ public sealed class SettingsWindowVisualPolishTests
         var xaml = File.ReadAllText(RepoPath("src", "OddSnap", "UI", "SettingsWindow.xaml"));
         var code = File.ReadAllText(RepoPath("src", "OddSnap", "UI", "SettingsWindow.xaml.cs"));
 
-        Assert.Contains("Width=\"1080\"", xaml);
-        Assert.Contains("MinHeight=\"560\" MinWidth=\"1080\"", xaml);
+        Assert.Contains("Width=\"960\"", xaml);
+        Assert.Contains("MinHeight=\"560\" MinWidth=\"860\"", xaml);
         Assert.Contains("<ColumnDefinition Width=\"150\"/>", xaml);
         Assert.Contains("Padding=\"10,14,8,18\"", xaml);
         Assert.Contains("Margin=\"18,10,18,0\"", xaml);
+        Assert.Contains("FontSize=\"20\"", xaml);
+        Assert.Contains("<Setter Property=\"MinHeight\" Value=\"52\"/>", xaml);
         Assert.Contains("<WrapPanel>", xaml[xaml.LastIndexOf("<Border Padding=\"0,0,0,10\">", xaml.IndexOf("x:Name=\"UploadImagesSubTab\"", StringComparison.Ordinal), StringComparison.Ordinal)..xaml.IndexOf("</WrapPanel>", xaml.IndexOf("x:Name=\"UploadUpscaleSubTab\"", StringComparison.Ordinal), StringComparison.Ordinal)]);
 
         AssertSettingsPageAllowsHorizontalOverflow(xaml, "HotkeysPanel");
@@ -44,6 +46,58 @@ public sealed class SettingsWindowVisualPolishTests
         Assert.Contains("if (Width > maxWidth)", fitBlock);
         Assert.Contains("Left = Math.Min(Math.Max(Left, minLeft), Math.Max(minLeft, maxLeft));", fitBlock);
         Assert.Contains("Loaded += (_, _) => EnsureSettingsWindowFitsWorkArea();", code);
+    }
+
+    [Fact]
+    public void UiScaleFallbackSelectsNormalScale()
+    {
+        var appearanceCode = File.ReadAllText(RepoPath("src", "OddSnap", "UI", "Settings", "SettingsWindow.Appearance.cs"));
+        var selectBlock = GetMethodBlock(appearanceCode, "private void SelectUiScale(double scale)");
+
+        Assert.Contains("SelectComboByTag(UiScaleCombo, \"1.0\");", selectBlock);
+        Assert.DoesNotContain("UiScaleCombo.SelectedIndex = 2;", selectBlock);
+    }
+
+    [Fact]
+    public void SettingsControlsUseSharedSizingSystem()
+    {
+        var xaml = File.ReadAllText(RepoPath("src", "OddSnap", "UI", "SettingsWindow.xaml"));
+
+        Assert.Contains("x:Key=\"SettingsControlHeight\">30</sys:Double>", xaml);
+        Assert.Contains("x:Key=\"SettingsControlPadding\">10,5</Thickness>", xaml);
+        Assert.Contains("x:Key=\"SettingsControlFontSize\">12</sys:Double>", xaml);
+        Assert.Contains("x:Key=\"SettingsControlMinWidth\">88</sys:Double>", xaml);
+        Assert.Contains("<Style TargetType=\"ComboBox\">", xaml);
+        Assert.Contains("<Style TargetType=\"ComboBoxItem\">", xaml);
+        Assert.Contains("ThemeInputBackgroundBrush", xaml);
+        Assert.Contains("<Setter Property=\"Height\" Value=\"{StaticResource SettingsControlHeight}\"/>", xaml);
+        Assert.Contains("<Setter Property=\"MinWidth\" Value=\"{StaticResource SettingsControlMinWidth}\"/>", xaml);
+        Assert.Contains("<Setter Property=\"Padding\" Value=\"{StaticResource SettingsControlPadding}\"/>", xaml);
+        Assert.Contains("<Setter Property=\"FontSize\" Value=\"{StaticResource SettingsControlFontSize}\"/>", xaml);
+        Assert.DoesNotContain("FontSize=\"11.5\" Padding=\"8,4\"", xaml);
+        Assert.DoesNotContain("FontSize=\"11\" Padding=\"7,4\"", xaml);
+        Assert.DoesNotContain("MinWidth=\"64\"", xaml);
+        Assert.Contains("<ControlTemplate TargetType=\"ComboBox\">", xaml);
+        Assert.Contains("x:Name=\"PART_Popup\"", xaml);
+        Assert.Contains("Background=\"{DynamicResource ThemeCardBrush}\"", xaml);
+        Assert.DoesNotContain("Background=\"White\"", xaml);
+    }
+
+    [Fact]
+    public void SettingsTogglesUseWinUiSwitchSizing()
+    {
+        var xaml = File.ReadAllText(RepoPath("src", "OddSnap", "UI", "SettingsWindow.xaml"));
+        var checkBoxStyle = GetXamlElementBlock(xaml, "<Style TargetType=\"CheckBox\">", "</Style>");
+
+        Assert.Contains("<Setter Property=\"Width\" Value=\"42\"/>", checkBoxStyle);
+        Assert.Contains("<Setter Property=\"Height\" Value=\"20\"/>", checkBoxStyle);
+        Assert.Contains("Width=\"40\"", checkBoxStyle);
+        Assert.Contains("Height=\"20\"", checkBoxStyle);
+        Assert.Contains("CornerRadius=\"10\"", checkBoxStyle);
+        Assert.Contains("Width=\"12\"", checkBoxStyle);
+        Assert.Contains("Height=\"12\"", checkBoxStyle);
+        Assert.Contains("Margin=\"4,0\"", checkBoxStyle);
+        Assert.Contains("<Trigger Property=\"IsKeyboardFocused\" Value=\"True\">", checkBoxStyle);
     }
 
     [Fact]
@@ -799,6 +853,9 @@ public sealed class SettingsWindowVisualPolishTests
 
         Assert.Contains("private bool _suppressOcrPreferenceChange;", settingsCode);
         Assert.Contains("x:Name=\"OcrPreferenceStatusText\"", xaml);
+        Assert.Contains("x:Name=\"OcrAutoCopyCheck\"", xaml);
+        Assert.Contains("Checked=\"OcrAutoCopyCheck_Changed\" Unchecked=\"OcrAutoCopyCheck_Changed\"", xaml);
+        Assert.Contains("_settingsService.Settings.OcrAutoCopyToClipboard", ocrCode);
         AssertNamedTextBlockUsesStyle(xaml, "OcrPreferenceStatusText", "SettingsStatusText");
         Assert.Contains("x:Name=\"TranslationPreferenceStatusText\"", xaml);
         AssertNamedTextBlockUsesStyle(xaml, "TranslationPreferenceStatusText", "SettingsStatusText");
@@ -4897,6 +4954,17 @@ public sealed class SettingsWindowVisualPolishTests
         Assert.True(end > start, $"Could not find return after block marker: {marker}");
 
         return source[start..end];
+    }
+
+    private static string GetXamlElementBlock(string source, string openingMarker, string closingMarker)
+    {
+        var start = source.IndexOf(openingMarker, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Could not find XAML block marker: {openingMarker}");
+
+        var end = source.IndexOf(closingMarker, start, StringComparison.Ordinal);
+        Assert.True(end > start, $"Could not find XAML block close: {closingMarker}");
+
+        return source[start..(end + closingMarker.Length)];
     }
 
     private static void AssertSearchFailureStatusWrittenAfterLoadingStops(string methodBlock)

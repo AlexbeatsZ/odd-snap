@@ -90,6 +90,28 @@ public sealed class AppCapturePolishTests
     }
 
     [Fact]
+    public void OcrAutoCopySkipsResultWindowWhenClipboardCopySucceeds()
+    {
+        var source = File.ReadAllText(RepoPath("src", "OddSnap", "App", "App.Capture.Handlers.cs"));
+        var ocrBlock = GetMethodBlock(source, "private void HandleOcrResult(Bitmap result)");
+        var settingIndex = ocrBlock.IndexOf("_settingsService.Settings.OcrAutoCopyToClipboard", StringComparison.Ordinal);
+        var copyIndex = ocrBlock.IndexOf("var copied = TryCopyCaptureTextToClipboard(text);", settingIndex, StringComparison.Ordinal);
+        var toastIndex = ocrBlock.IndexOf("ToastSpec.Standard(\"OCR copied\", FormatOcrAutoCopyToastPreview(text))", copyIndex, StringComparison.Ordinal);
+        var fallbackIndex = ocrBlock.IndexOf("if (!copied)", toastIndex, StringComparison.Ordinal);
+        var normalWindowIndex = ocrBlock.IndexOf("else", fallbackIndex, StringComparison.Ordinal);
+
+        Assert.True(settingIndex >= 0, "OCR should check the auto-copy setting.");
+        Assert.True(copyIndex > settingIndex, "Auto-copy OCR should copy recognized text.");
+        Assert.True(toastIndex > copyIndex, "Auto-copy OCR should report copy status.");
+        Assert.True(fallbackIndex > toastIndex, "Auto-copy OCR should only open a result window when copy fails.");
+        Assert.True(normalWindowIndex > fallbackIndex, "Normal OCR should still open the result window.");
+
+        var previewBlock = GetMethodBlock(source, "private static string FormatOcrAutoCopyToastPreview(string text)");
+        Assert.Contains("StringSplitOptions.RemoveEmptyEntries", previewBlock);
+        Assert.Contains("preview.Length > 80", previewBlock);
+    }
+
+    [Fact]
     public void RecordingClipboardStatusIsShownInCompletionFeedback()
     {
         var source = File.ReadAllText(RepoPath("src", "OddSnap", "App", "App.Capture.cs"));

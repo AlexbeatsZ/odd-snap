@@ -353,9 +353,23 @@ public partial class App
                     if (_settingsService!.Settings.SaveHistory)
                         EnsureHistoryService().SaveOcrEntry(text);
 
-                    // Open OCR result window instead of copying directly
-                    var window = new OcrResultWindow(text, _settingsService);
-                    window.Show();
+                    if (_settingsService.Settings.OcrAutoCopyToClipboard)
+                    {
+                        var copied = TryCopyCaptureTextToClipboard(text);
+                        ToastWindow.Show(copied
+                            ? ToastSpec.Standard("OCR copied", FormatOcrAutoCopyToastPreview(text)) with { SuppressSound = true }
+                            : ToastSpec.Standard("OCR ready", "Clipboard copy failed."));
+                        if (!copied)
+                        {
+                            var window = new OcrResultWindow(text, _settingsService);
+                            window.Show();
+                        }
+                    }
+                    else
+                    {
+                        var window = new OcrResultWindow(text, _settingsService);
+                        window.Show();
+                    }
                 }
                 else
                 {
@@ -372,5 +386,11 @@ public partial class App
             finally { result.Dispose(); }
             ScheduleIdleMemoryTrim();
         });
+    }
+
+    private static string FormatOcrAutoCopyToastPreview(string text)
+    {
+        var preview = string.Join(" ", text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return preview.Length > 80 ? preview[..80] + "..." : preview;
     }
 }

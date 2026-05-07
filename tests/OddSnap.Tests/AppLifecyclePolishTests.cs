@@ -34,6 +34,19 @@ public sealed class AppLifecyclePolishTests
         Assert.Contains("return;", uninstallBlock);
     }
 
+    [Fact]
+    public void StartupCanOpenSettingsForVisualTesting()
+    {
+        var source = File.ReadAllText(RepoPath("src", "OddSnap", "App", "App.Startup.cs"));
+        var startupBlock = GetMethodBlock(source, "protected override void OnStartup(StartupEventArgs e)");
+
+        Assert.Contains("openSettingsOnStartup", startupBlock);
+        Assert.Contains("a.Equals(\"--settings\", StringComparison.OrdinalIgnoreCase)", startupBlock);
+        Assert.Contains("a.Equals(\"/settings\", StringComparison.OrdinalIgnoreCase)", startupBlock);
+        Assert.Contains("if (openSettingsAfterWizard || openSettingsOnStartup)", startupBlock);
+        Assert.Contains("ShowSettings();", startupBlock);
+    }
+
     private static string GetMethodBlock(string source, string signature)
     {
         var start = source.IndexOf(signature, StringComparison.Ordinal);

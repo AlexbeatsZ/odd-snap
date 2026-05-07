@@ -152,6 +152,7 @@ public partial class SettingsWindow
         MuteSoundsCheck.IsChecked = s.MuteSounds;
         DisableAnimationsCheck.IsChecked = s.DisableAnimations;
         SelectUiScale(s.UiScale);
+        OcrAutoCopyCheck.IsChecked = s.OcrAutoCopyToClipboard;
         CrosshairGuidesCheck.IsChecked = s.ShowCrosshairGuides;
         ShowCaptureMagnifierCheck.IsChecked = s.ShowCaptureMagnifier;
         OverlayAllMonitorsCheck.IsChecked = s.OverlayCaptureAllMonitors;
@@ -345,7 +346,7 @@ public partial class SettingsWindow
             }
         }
 
-        UiScaleCombo.SelectedIndex = 2;
+        SelectComboByTag(UiScaleCombo, "1.0");
     }
 
     private void TabChanged(object sender, RoutedEventArgs e)

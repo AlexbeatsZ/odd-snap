@@ -22,6 +22,7 @@ public partial class App
         }
 
         bool isPostInstall = e.Args.Any(a => a.Equals("--post-install", StringComparison.OrdinalIgnoreCase));
+        bool openSettingsOnStartup = e.Args.Any(a => a.Equals("--settings", StringComparison.OrdinalIgnoreCase) || a.Equals("/settings", StringComparison.OrdinalIgnoreCase));
 
         _mutex = new Mutex(false, "OddSnapScreenshotTool_SingleInstance");
         bool acquired;
@@ -95,7 +96,7 @@ public partial class App
         if (_settingsService.Settings.AutoCheckForUpdates)
             _ = CheckForUpdatesOnStartupAsync();
 
-        if (openSettingsAfterWizard)
+        if (openSettingsAfterWizard || openSettingsOnStartup)
             ShowSettings();
     }
 

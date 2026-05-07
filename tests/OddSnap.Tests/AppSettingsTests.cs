@@ -170,6 +170,14 @@ public sealed class AppSettingsTests
     }
 
     [Fact]
+    public void OcrAutoCopy_DefaultsToDisabled()
+    {
+        var settings = new AppSettings();
+
+        Assert.False(settings.OcrAutoCopyToClipboard);
+    }
+
+    [Fact]
     public void TryDeserialize_NormalizesUnsupportedInterfaceLanguageToAuto()
     {
         var json = """

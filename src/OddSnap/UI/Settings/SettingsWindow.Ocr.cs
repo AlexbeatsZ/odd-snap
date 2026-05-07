@@ -179,6 +179,22 @@ public partial class SettingsWindow
             SetOcrPreferenceStatus);
     }
 
+    private void OcrAutoCopyCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded || _suppressOcrPreferenceChange) return;
+
+        var previous = _settingsService.Settings.OcrAutoCopyToClipboard;
+        var selected = OcrAutoCopyCheck.IsChecked == true;
+        UpdateOcrPreference(
+            "settings.ocr-auto-copy",
+            "OCR auto-copy",
+            previous,
+            selected,
+            value => _settingsService.Settings.OcrAutoCopyToClipboard = value,
+            value => OcrAutoCopyCheck.IsChecked = value,
+            SetOcrPreferenceStatus);
+    }
+
     private static string GetLanguageLabel(string languageTag)
     {
         try

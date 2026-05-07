@@ -1,4 +1,6 @@
 using Microsoft.UI;
+using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using OddSnap.AppModel.Jobs;
 using OddSnap.AppModel.Settings;
@@ -74,28 +76,7 @@ public sealed partial class MainPage : Page
         });
 
         foreach (var item in section.Items)
-        {
-            var row = new StackPanel { Spacing = 2 };
-            row.Children.Add(new TextBlock
-            {
-                Text = item.Label,
-                FontSize = 15,
-                FontWeight = Microsoft.UI.Text.FontWeights.Medium
-            });
-            row.Children.Add(new TextBlock
-            {
-                Text = $"{item.Description} {(string.IsNullOrWhiteSpace(item.BindingPath) ? string.Empty : $"[{item.BindingPath}]")}".Trim(),
-                Style = (Style)Application.Current.Resources["BodyTextStyle"],
-                Foreground = new SolidColorBrush(Colors.Gray)
-            });
-            row.Children.Add(new TextBlock
-            {
-                Text = $"Kind: {item.ValueKind}",
-                Foreground = new SolidColorBrush(Colors.DarkGray),
-                FontSize = 12
-            });
-            stack.Children.Add(row);
-        }
+            stack.Children.Add(BuildSettingRow(item));
 
         return new Border
         {
@@ -106,6 +87,112 @@ public sealed partial class MainPage : Page
             Child = stack
         };
     }
+
+    private static UIElement BuildSettingRow(SettingDefinition item)
+    {
+        var row = new Grid
+        {
+            ColumnSpacing = 18,
+            Padding = new Thickness(0, 8, 0, 8),
+            MinHeight = 56
+        };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var copy = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+        copy.Children.Add(new TextBlock
+        {
+            Text = item.Label,
+            FontSize = 15,
+            FontWeight = Microsoft.UI.Text.FontWeights.Medium
+        });
+        copy.Children.Add(new TextBlock
+        {
+            Text = item.Description,
+            Style = (Style)Application.Current.Resources["BodyTextStyle"],
+            Foreground = new SolidColorBrush(Colors.Gray)
+        });
+        if (!string.IsNullOrWhiteSpace(item.BindingPath))
+        {
+            copy.Children.Add(new TextBlock
+            {
+                Text = item.BindingPath,
+                Foreground = new SolidColorBrush(Colors.DarkGray),
+                FontSize = 12
+            });
+        }
+
+        Grid.SetColumn(copy, 0);
+        row.Children.Add(copy);
+
+        var control = BuildSettingControl(item);
+        Grid.SetColumn(control, 1);
+        row.Children.Add(control);
+        return row;
+    }
+
+    private static FrameworkElement BuildSettingControl(SettingDefinition item)
+    {
+        FrameworkElement control = item.ValueKind switch
+        {
+            SettingsValueKind.Toggle => BuildToggleSwitch(item),
+            SettingsValueKind.Choice => BuildChoiceComboBox(item),
+            SettingsValueKind.Text or SettingsValueKind.Folder => BuildTextBox(item),
+            SettingsValueKind.Number or SettingsValueKind.Duration => BuildNumberBox(item),
+            SettingsValueKind.Action => BuildActionButton(item),
+            _ => new TextBlock { Text = item.ValueKind.ToString() }
+        };
+
+        control.VerticalAlignment = VerticalAlignment.Center;
+        AutomationProperties.SetName(control, item.Label);
+        AutomationProperties.SetHelpText(control, item.Description);
+        return control;
+    }
+
+    private static ToggleSwitch BuildToggleSwitch(SettingDefinition item) => new()
+    {
+        MinWidth = 96,
+        OffContent = "Off",
+        OnContent = "On",
+        IsOn = false
+    };
+
+    private static ComboBox BuildChoiceComboBox(SettingDefinition item)
+    {
+        var combo = new ComboBox
+        {
+            MinWidth = 180,
+            PlaceholderText = "Choose"
+        };
+
+        if (item.Options is { Count: > 0 })
+        {
+            foreach (var option in item.Options)
+                combo.Items.Add(new ComboBoxItem { Content = option.Label, Tag = option.Value });
+            combo.SelectedIndex = 0;
+        }
+
+        return combo;
+    }
+
+    private static TextBox BuildTextBox(SettingDefinition item) => new()
+    {
+        MinWidth = 220,
+        PlaceholderText = item.BindingPath ?? item.Label
+    };
+
+    private static NumberBox BuildNumberBox(SettingDefinition item) => new()
+    {
+        MinWidth = 140,
+        SmallChange = 1,
+        SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact
+    };
+
+    private static Button BuildActionButton(SettingDefinition item) => new()
+    {
+        Content = item.Label,
+        MinWidth = 132
+    };
 
     private static UIElement BuildJobsPanel()
     {

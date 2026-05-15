@@ -7,7 +7,7 @@ namespace OddSnap.UI;
 
 internal static class SettingsMediaCache
 {
-    private const int MaxThumbCacheEntries = 160;
+    private const int MaxThumbCacheEntries = 96;
     private static readonly Dictionary<string, BitmapSource> ThumbCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly LinkedList<string> ThumbCacheOrder = new();
     private static readonly Dictionary<string, LinkedListNode<string>> ThumbCacheNodes = new(StringComparer.OrdinalIgnoreCase);

@@ -264,7 +264,7 @@ public sealed partial class ImageSearchIndexService : IDisposable
     private int _version;
     private string _statusText = "Search index idle";
     private Task? _syncLoopTask;
-    private const int MaxSearchCacheEntries = 32;
+    private const int MaxSearchCacheEntries = 12;
 
     public event Action? Changed;
     public event Action<string>? StatusChanged;

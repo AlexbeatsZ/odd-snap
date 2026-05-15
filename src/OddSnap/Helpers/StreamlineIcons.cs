@@ -21,6 +21,7 @@ namespace OddSnap.Helpers;
 public static class StreamlineIcons
 {
     private const int ViewBoxSize = 20;
+    private const int WpfCacheLimit = 384;
     private const int GdiBitmapCacheLimit = 256;
     private static readonly ConcurrentDictionary<string, BitmapSource?> WpfCache = new();
     private static readonly ConcurrentDictionary<string, Geometry?> GeometryCache = new();
@@ -112,6 +113,9 @@ public static class StreamlineIcons
     public static BitmapSource? RenderWpf(string id, DrawingColor color, int size, bool active = false)
     {
         var key = $"{id}|{active}|{color.ToArgb()}|{size}";
+        if (WpfCache.Count >= WpfCacheLimit && !WpfCache.ContainsKey(key))
+            WpfCache.Clear();
+
         return WpfCache.GetOrAdd(key, _ => RenderWpfUncached(id, color, size, active));
     }
 

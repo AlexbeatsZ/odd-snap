@@ -22,7 +22,7 @@ public sealed class GifRecorder : IDisposable
     private readonly bool _showCursor;
     private readonly string _tempDir;
     private readonly CancellationTokenSource _cts = new();
-    private readonly BlockingCollection<(Bitmap frame, int index)> _frameQueue = new(boundedCapacity: 60);
+    private readonly BlockingCollection<(Bitmap frame, int index)> _frameQueue = new(boundedCapacity: 12);
     private readonly string? _ffmpegPath;
     private readonly string? _rawFramePath;
 

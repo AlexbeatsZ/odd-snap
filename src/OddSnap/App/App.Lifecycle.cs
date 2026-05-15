@@ -355,7 +355,7 @@ public partial class App
 
                 using var process = System.Diagnostics.Process.GetCurrentProcess();
                 var privateBytes = process.PrivateMemorySize64;
-                SettingsWindow.TrimThumbCache(privateBytes >= IdleTrimPrivateBytesThreshold ? 64 : 96);
+                SettingsWindow.TrimThumbCache(privateBytes >= IdleTrimPrivateBytesThreshold ? 48 : 72);
 
                 if (privateBytes < IdleTrimPrivateBytesThreshold)
                 {

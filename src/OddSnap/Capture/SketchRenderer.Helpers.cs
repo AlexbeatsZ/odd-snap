@@ -31,6 +31,7 @@ public static partial class SketchRenderer
     {
         long key = ((long)alpha << 32) | (uint)(int)Math.Round(width * 16f);
         if (_shadowPens.TryGetValue(key, out var pen)) return pen;
+        TrimCacheIfNeeded(_shadowPens, MaxDynamicGdiCacheEntries);
         pen = new Pen(Color.FromArgb(alpha, 0, 0, 0), width)
         {
             StartCap = LineCap.Round,

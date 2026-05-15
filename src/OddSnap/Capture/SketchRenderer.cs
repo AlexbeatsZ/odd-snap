@@ -11,6 +11,7 @@ namespace OddSnap.Capture;
 public static partial class SketchRenderer
 {
     private const float AnnotationStrokeWidth = 6f;
+    private const int MaxDynamicGdiCacheEntries = 128;
 
     // Match text annotation shadow/stroke values exactly
     private static readonly Color AnnotShadow1 = Color.FromArgb(50, 0, 0, 0);
@@ -36,8 +37,6 @@ public static partial class SketchRenderer
     // Reusable point buffer for offset calculations (avoids LINQ .Select().ToArray() per frame)
     [ThreadStatic] private static Point[]? _offsetBuffer;
 
-    // Pen caches keyed on (argb, width-quantized). Tool colors come from a small palette,
-    // so the cache is bounded and never grows unbounded over a session.
     private static readonly Dictionary<long, Pen> _roundCapPens = new();
     private static readonly Dictionary<long, Pen> _roundJoinPens = new();
     private static readonly Dictionary<long, Pen> _flatEndCapPens = new();
@@ -50,6 +49,7 @@ public static partial class SketchRenderer
     {
         long key = PenKey(color.ToArgb(), width);
         if (_roundCapPens.TryGetValue(key, out var pen)) return pen;
+        TrimCacheIfNeeded(_roundCapPens, MaxDynamicGdiCacheEntries);
         pen = new Pen(color, width)
         {
             StartCap = LineCap.Round,
@@ -65,6 +65,7 @@ public static partial class SketchRenderer
     {
         long key = PenKey(color.ToArgb(), width);
         if (_roundJoinPens.TryGetValue(key, out var pen)) return pen;
+        TrimCacheIfNeeded(_roundJoinPens, MaxDynamicGdiCacheEntries);
         pen = new Pen(color, width) { LineJoin = LineJoin.Round };
         _roundJoinPens[key] = pen;
         return pen;
@@ -75,6 +76,7 @@ public static partial class SketchRenderer
     {
         long key = PenKey(color.ToArgb(), width);
         if (_flatEndCapPens.TryGetValue(key, out var pen)) return pen;
+        TrimCacheIfNeeded(_flatEndCapPens, MaxDynamicGdiCacheEntries);
         pen = new Pen(color, width)
         {
             StartCap = LineCap.Round,
@@ -85,8 +87,6 @@ public static partial class SketchRenderer
         return pen;
     }
 
-    // SolidBrush cache keyed on ARGB. Tool colors come from a small palette,
-    // so the cache is bounded over a session. Cached brushes are not disposed.
     private static readonly Dictionary<int, SolidBrush> _toolColorBrushes = new();
 
     /// <summary>Cached SolidBrush for arbitrary colors. Do not dispose.</summary>
@@ -94,9 +94,24 @@ public static partial class SketchRenderer
     {
         int argb = color.ToArgb();
         if (_toolColorBrushes.TryGetValue(argb, out var brush)) return brush;
+        TrimCacheIfNeeded(_toolColorBrushes, MaxDynamicGdiCacheEntries);
         brush = new SolidBrush(color);
         _toolColorBrushes[argb] = brush;
         return brush;
+    }
+
+    private static void TrimCacheIfNeeded<TKey, TValue>(Dictionary<TKey, TValue> cache, int maxEntries)
+        where TKey : notnull
+        where TValue : IDisposable
+    {
+        if (cache.Count < maxEntries)
+            return;
+
+        foreach (var key in cache.Keys.Take(Math.Max(1, maxEntries / 4)).ToArray())
+        {
+            cache[key].Dispose();
+            cache.Remove(key);
+        }
     }
 
     /// <summary>Offset points into a reusable buffer — avoids allocating a new array per shadow/stroke pass.</summary>

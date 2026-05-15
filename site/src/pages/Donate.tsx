@@ -13,7 +13,7 @@ function PrimaryBtn({ href, children }: { href: string; children: React.ReactNod
 function KofiLogo() {
   return (
     <img
-      src={import.meta.env.BASE_URL + "kofi-logo.webp"}
+      src={import.meta.env.BASE_URL + "assets/site/kofi-logo.webp"}
       alt="ko-fi"
       className="w-8 h-8 shrink-0 object-contain"
     />

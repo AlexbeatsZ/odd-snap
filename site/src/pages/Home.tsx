@@ -89,6 +89,7 @@ const TRANSITION_MS = 600;
 
 function Showcase() {
   const base = import.meta.env.BASE_URL;
+  const assetBase = base + "assets/site/";
   const N = showcase.length;
   const [idx, setIdx] = useState(0); // 0..N (N = clone of 0 for seamless wrap)
   const [animate, setAnimate] = useState(true);
@@ -159,7 +160,7 @@ function Showcase() {
                 style={{ width: `${slotPct}%` }}
               >
                 <img
-                  src={base + s.img}
+                  src={assetBase + s.img}
                   alt={s.title}
                   className="w-full h-full object-cover object-top"
                   loading={i <= 1 ? "eager" : "lazy"}
@@ -188,6 +189,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 export default function Home() {
   const base = import.meta.env.BASE_URL;
+  const assetBase = base + "assets/site/";
   const { releases } = useReleases();
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
 
@@ -205,14 +207,14 @@ export default function Home() {
         <div className="mx-auto flex max-w-[760px] flex-col items-center text-center">
           <div className="mb-9 rounded-[2rem] border border-[#DDD5C7] bg-[#FFFDF8]/72 p-4 shadow-[0_24px_70px_rgba(72,57,34,0.13)] backdrop-blur">
             <img
-              src={base + "oddsnap-square.webp"}
+              src={assetBase + "oddsnap-square.webp"}
               alt=""
               className="h-28 w-28 sm:h-32 sm:w-32"
             />
           </div>
           <div className="brand-wordmark mb-9 px-3">
             <img
-              src={base + "oddsnap.png"}
+              src={assetBase + "oddsnap.png"}
               alt="OddSnap"
               className="w-full"
               style={{

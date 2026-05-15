@@ -11,7 +11,7 @@
         Background="Transparent"
         WindowStyle="None"
         AllowsTransparency="True"
-        Icon="pack://application:,,,/oddsnap.ico">
+        Icon="pack://application:,,,/Assets/oddsnap.ico">
 
     <Window.Resources>
         <SolidColorBrush x:Key="ThemeTextPrimaryBrush" Color="#FFF0F0F0"/>

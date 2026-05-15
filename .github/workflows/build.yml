@@ -92,7 +92,7 @@ jobs:
             --mainExe OddSnap.exe `
             --packTitle OddSnap `
             --packAuthors jasperdevs `
-            --icon src/OddSnap/oddsnap.ico `
+            --icon src/OddSnap/Assets/oddsnap.ico `
             --channel "${{ matrix.rid }}" `
             --runtime "${{ matrix.rid }}" `
             --releaseNotes "docs/CHANGELOG.md" `

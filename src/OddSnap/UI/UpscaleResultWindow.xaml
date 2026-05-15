@@ -11,7 +11,7 @@
         WindowStyle="None"
         AllowsTransparency="True"
         Topmost="True"
-        Icon="pack://application:,,,/oddsnap.ico"
+        Icon="pack://application:,,,/Assets/oddsnap.ico"
         PreviewKeyDown="Window_PreviewKeyDown">
 
     <Window.Resources>

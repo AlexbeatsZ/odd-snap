@@ -52,7 +52,7 @@ public sealed partial class RecordingForm
         Cursor = Cursors.Default;
 
         CalcToolbarLayout();
-        TransitionToRecordingSurface();
+        TransitionToRecordingSurface(screenRegion);
 
         Current = this;
         _desktopAudioSoundSuppression = _recordDesktop ? SoundService.SuppressPlayback() : null;
@@ -83,10 +83,11 @@ public sealed partial class RecordingForm
                 StopRecording();
                 return;
             }
-            Invalidate(_toolbarRect);
+            _recordingToolbarForm?.UpdateSurface();
         };
         _tickTimer.Start();
-        Invalidate(Rectangle.Union(_selection, _toolbarRect));
+        _recordingToolbarForm?.UpdateSurface();
+        Invalidate(_selection);
         PerformanceTrace.LogElapsed(
             "perf.recording.start",
             startStarted,
@@ -112,7 +113,7 @@ public sealed partial class RecordingForm
             Bitmap? firstFrame = gifRec?.GetFirstFrame();
             try
             {
-                try { System.Windows.Application.Current?.Dispatcher.BeginInvoke(() => ToastWindow.Show("Recording", "Encoding, please wait...")); } catch { }
+                TryPostEncodingToast();
                 gifRec?.StopAndEncode(_savePath);
                 vidRec?.StopAndEncode(_savePath);
                 _desktopAudioSoundSuppression?.Dispose();
@@ -147,6 +148,22 @@ public sealed partial class RecordingForm
         });
     }
 
+    private static void TryPostEncodingToast()
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
+            return;
+
+        try
+        {
+            _ = dispatcher.BeginInvoke(() => ToastWindow.Show("Recording", "Encoding, please wait..."));
+        }
+        catch (InvalidOperationException ex)
+        {
+            AppDiagnostics.LogWarning("recording.encoding-toast-post", ex.Message, ex);
+        }
+    }
+
     private void DiscardRecording()
     {
         if (_state == State.Recording && Interlocked.Exchange(ref _recordingStopRequested, 1) != 0)
@@ -164,25 +181,89 @@ public sealed partial class RecordingForm
     private void CalcToolbarLayout()
     {
         int tw = UiChrome.ScaleInt(320), th = WindowsDockRenderer.SurfaceHeight;
-        // Try to place above the recording region
-        int tx = _recordRegion.X + _recordRegion.Width / 2 - tw / 2;
-        int ty = _recordRegion.Y - th - UiChrome.ScaleInt(14);
-
-        // If off-screen (fullscreen recording), place at bottom center of screen
-        var edge = UiChrome.ScaleInt(4);
-        if (ty < edge || _recordRegion.Height > Height - UiChrome.ScaleInt(100))
-            ty = Height - th - UiChrome.ScaleInt(40); // from bottom edge
-        if (tx < edge) tx = edge;
-        if (tx + tw > Width - edge) tx = Width - edge - tw;
-
-        _toolbarRect = new Rectangle(tx, ty, tw, th);
-
-        int btnY = _toolbarRect.Y + (_toolbarRect.Height - WindowsDockRenderer.IconButtonSize) / 2;
-        _discardBtn = new Rectangle(_toolbarRect.Right - WindowsDockRenderer.SurfacePadding - WindowsDockRenderer.IconButtonSize, btnY, WindowsDockRenderer.IconButtonSize, WindowsDockRenderer.IconButtonSize);
-        _stopBtn = new Rectangle(_discardBtn.X - WindowsDockRenderer.ButtonSpacing - WindowsDockRenderer.IconButtonSize, btnY, WindowsDockRenderer.IconButtonSize, WindowsDockRenderer.IconButtonSize);
+        _toolbarRect = GetSmartRecordingToolbarRect(
+            _recordRegion,
+            new Rectangle(0, 0, Width, Height),
+            new Size(tw, th),
+            UiChrome.ScaleInt(14),
+            UiChrome.ScaleInt(4));
     }
 
-    private void TransitionToRecordingSurface()
+    internal static Rectangle GetSmartRecordingToolbarRect(
+        Rectangle recordingRegion,
+        Rectangle clientBounds,
+        Size toolbarSize,
+        int gap,
+        int edge)
+    {
+        if (recordingRegion.Width <= 0 ||
+            recordingRegion.Height <= 0 ||
+            clientBounds.Width <= 0 ||
+            clientBounds.Height <= 0 ||
+            toolbarSize.Width <= 0 ||
+            toolbarSize.Height <= 0)
+        {
+            return Rectangle.Empty;
+        }
+
+        gap = Math.Max(0, gap);
+        edge = Math.Max(0, edge);
+
+        toolbarSize = new Size(
+            Math.Min(toolbarSize.Width, Math.Max(1, clientBounds.Width - edge * 2)),
+            Math.Min(toolbarSize.Height, Math.Max(1, clientBounds.Height - edge * 2)));
+
+        int minX = clientBounds.Left + edge;
+        int minY = clientBounds.Top + edge;
+        int maxX = clientBounds.Right - edge - toolbarSize.Width;
+        int maxY = clientBounds.Bottom - edge - toolbarSize.Height;
+        if (maxX < minX || maxY < minY)
+            return Rectangle.Empty;
+
+        int centerX = recordingRegion.Left + (recordingRegion.Width - toolbarSize.Width) / 2;
+        int centerY = recordingRegion.Top + (recordingRegion.Height - toolbarSize.Height) / 2;
+        int safeCenterX = clientBounds.Left + (clientBounds.Width - toolbarSize.Width) / 2;
+        int safeCenterY = clientBounds.Top + (clientBounds.Height - toolbarSize.Height) / 2;
+
+        Rectangle Clamp(int x, int y)
+            => new(Math.Clamp(x, minX, maxX), Math.Clamp(y, minY, maxY), toolbarSize.Width, toolbarSize.Height);
+
+        var candidates = new[]
+        {
+            Clamp(centerX, recordingRegion.Top - toolbarSize.Height - gap),
+            Clamp(centerX, recordingRegion.Bottom + gap),
+            Clamp(recordingRegion.Right + gap, centerY),
+            Clamp(recordingRegion.Left - toolbarSize.Width - gap, centerY),
+            Clamp(safeCenterX, minY),
+            Clamp(safeCenterX, maxY),
+            Clamp(minX, safeCenterY),
+            Clamp(maxX, safeCenterY),
+            Clamp(minX, minY),
+            Clamp(maxX, minY),
+            Clamp(minX, maxY),
+            Clamp(maxX, maxY)
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (!candidate.IntersectsWith(recordingRegion))
+                return candidate;
+        }
+
+        return candidates
+            .OrderBy(candidate => GetIntersectionArea(candidate, recordingRegion))
+            .First();
+    }
+
+    private static int GetIntersectionArea(Rectangle a, Rectangle b)
+    {
+        var intersection = Rectangle.Intersect(a, b);
+        return intersection.Width <= 0 || intersection.Height <= 0
+            ? 0
+            : intersection.Width * intersection.Height;
+    }
+
+    private void TransitionToRecordingSurface(Rectangle screenRegion)
     {
         // Hide the style flip into transparent mode so the user does not see
         // the fullscreen surface blink before the recording chrome repaints.
@@ -196,12 +277,37 @@ public sealed partial class RecordingForm
 
         BackColor = TransKey;
         TransparencyKey = TransKey;
-        CaptureWindowExclusion.SetLogicalBounds(Handle, GetRecordingChromeScreenBounds);
+        EnsureRecordingBorderForm(screenRegion);
+        EnsureRecordingToolbarForm();
         Invalidate();
         Visible = true;
     }
 
-    private Rectangle GetRecordingChromeScreenBounds()
+    private void EnsureRecordingBorderForm(Rectangle screenRegion)
+    {
+        if (screenRegion.Width <= 0 || screenRegion.Height <= 0)
+            return;
+
+        _recordingBorderForm ??= new RecordingBorderForm(screenRegion);
+        if (!_recordingBorderForm.Visible)
+            _recordingBorderForm.Show(this);
+        _recordingBorderForm.UpdateSurface();
+    }
+
+    private void EnsureRecordingToolbarForm()
+    {
+        var bounds = GetRecordingToolbarScreenBounds();
+        if (bounds.IsEmpty)
+            return;
+
+        _recordingToolbarForm ??= new RecordingToolbarForm(this);
+        _recordingToolbarForm.Bounds = bounds;
+        if (!_recordingToolbarForm.Visible)
+            _recordingToolbarForm.Show(this);
+        _recordingToolbarForm.UpdateSurface();
+    }
+
+    internal Rectangle GetRecordingToolbarScreenBounds()
     {
         if (_toolbarRect.Width <= 0 || _toolbarRect.Height <= 0)
             return Rectangle.Empty;

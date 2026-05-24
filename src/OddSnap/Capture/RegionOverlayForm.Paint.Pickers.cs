@@ -54,6 +54,36 @@ public sealed partial class RegionOverlayForm
     private static Font GetPickerSearchFont() => _pickerSearchFont ??= UiChrome.ChromeFont(10f);
     private static Font GetPickerSearchHintFont() => _pickerSearchHintFont ??= UiChrome.ChromeFont(8f);
 
+    private static void DisposePickerChromeResources()
+    {
+        _pickerSearchBg?.Dispose();
+        _pickerSearchHintBrush?.Dispose();
+        _pickerScrollTrackBrush?.Dispose();
+        _pickerScrollThumbBrush?.Dispose();
+        _emojiPlaceholderBrush?.Dispose();
+        _pickerFocusBorder?.Dispose();
+        _pickerActiveBorder?.Dispose();
+        _pickerCursorPen?.Dispose();
+        _pickerSeparatorPen?.Dispose();
+        _emojiPlaceholderPen?.Dispose();
+        _pickerSearchFont?.Dispose();
+        _pickerSearchHintFont?.Dispose();
+
+        _pickerSearchBg = null;
+        _pickerSearchHintBrush = null;
+        _pickerScrollTrackBrush = null;
+        _pickerScrollThumbBrush = null;
+        _emojiPlaceholderBrush = null;
+        _pickerFocusBorder = null;
+        _pickerActiveBorder = null;
+        _pickerCursorPen = null;
+        _pickerSeparatorPen = null;
+        _emojiPlaceholderPen = null;
+        _pickerSearchFont = null;
+        _pickerSearchHintFont = null;
+        _pickerChromeKey = 0;
+    }
+
     private void PaintEmojiPicker(Graphics g)
     {
         // Filter emojis by search

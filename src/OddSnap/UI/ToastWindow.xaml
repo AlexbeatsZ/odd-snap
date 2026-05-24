@@ -49,7 +49,7 @@
                                RenderOptions.BitmapScalingMode="HighQuality"/>
                     </Border>
 
-                    <Border x:Name="CloseBtn" Width="32" Height="32" CornerRadius="8"
+                    <Border x:Name="CloseBtn" Width="40" Height="40" CornerRadius="12"
                             Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
                             ToolTip="Close preview"
                             AutomationProperties.Name="Close preview"
@@ -59,11 +59,11 @@
                             KeyDown="CloseBtn_KeyDown"
                             HorizontalAlignment="Right" VerticalAlignment="Top"
                             Margin="0,8,8,0" Opacity="0" Visibility="Collapsed">
-                        <Image x:Name="CloseIcon" Width="16" Height="16" Stretch="Uniform" Opacity="1"
+                        <Image x:Name="CloseIcon" Width="18" Height="18" Stretch="Uniform" Opacity="1"
                                RenderOptions.BitmapScalingMode="HighQuality"
                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
-                    <Border x:Name="PinBtn" Width="32" Height="32" CornerRadius="8"
+                    <Border x:Name="PinBtn" Width="40" Height="40" CornerRadius="12"
                             Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
                             ToolTip="Pin preview"
                             AutomationProperties.Name="Pin preview"
@@ -73,11 +73,11 @@
                             KeyDown="PinBtn_KeyDown"
                             HorizontalAlignment="Left" VerticalAlignment="Top"
                             Margin="8,8,0,0" Opacity="0" Visibility="Collapsed">
-                        <Image x:Name="PinIcon" Width="16" Height="16" Stretch="Uniform" Opacity="1"
+                        <Image x:Name="PinIcon" Width="18" Height="18" Stretch="Uniform" Opacity="1"
                                RenderOptions.BitmapScalingMode="HighQuality"
                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
-                    <Border x:Name="SaveBtn" Width="32" Height="32" CornerRadius="8"
+                    <Border x:Name="SaveBtn" Width="40" Height="40" CornerRadius="12"
                             Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
                             ToolTip="Save preview"
                             AutomationProperties.Name="Save preview"
@@ -87,11 +87,11 @@
                             KeyDown="SaveBtn_KeyDown"
                             HorizontalAlignment="Right" VerticalAlignment="Bottom"
                             Margin="0,0,8,8" Opacity="0" Visibility="Collapsed">
-                        <Image x:Name="SaveIcon" Width="16" Height="16" Stretch="Uniform" Opacity="1"
+                        <Image x:Name="SaveIcon" Width="18" Height="18" Stretch="Uniform" Opacity="1"
                                RenderOptions.BitmapScalingMode="HighQuality"
                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
-                    <Border x:Name="OfficeBtn" Width="32" Height="32" CornerRadius="8"
+                    <Border x:Name="OfficeBtn" Width="40" Height="40" CornerRadius="12"
                             Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
                             ToolTip="Open with or send to Office"
                             AutomationProperties.Name="Open with or send to Office"
@@ -100,12 +100,12 @@
                             Focusable="True"
                             KeyDown="OfficeBtn_KeyDown"
                             HorizontalAlignment="Left" VerticalAlignment="Top"
-                            Margin="48,8,0,0" Opacity="0" Visibility="Collapsed">
-                        <Image x:Name="OfficeIcon" Width="16" Height="16" Stretch="Uniform" Opacity="1"
+                            Margin="56,8,0,0" Opacity="0" Visibility="Collapsed">
+                        <Image x:Name="OfficeIcon" Width="18" Height="18" Stretch="Uniform" Opacity="1"
                                RenderOptions.BitmapScalingMode="HighQuality"
                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
-                    <Border x:Name="AiRedirectBtn" Width="32" Height="32" CornerRadius="8"
+                    <Border x:Name="AiRedirectBtn" Width="40" Height="40" CornerRadius="12"
                             Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
                             ToolTip="Open in AI"
                             AutomationProperties.Name="Open in AI"
@@ -114,12 +114,12 @@
                             Focusable="True"
                             KeyDown="AiRedirectBtn_KeyDown"
                             HorizontalAlignment="Right" VerticalAlignment="Bottom"
-                            Margin="0,0,48,8" Opacity="0" Visibility="Collapsed">
-                        <Image x:Name="AiRedirectIcon" Width="16" Height="16" Stretch="Uniform" Opacity="1"
+                            Margin="0,0,56,8" Opacity="0" Visibility="Collapsed">
+                        <Image x:Name="AiRedirectIcon" Width="18" Height="18" Stretch="Uniform" Opacity="1"
                                RenderOptions.BitmapScalingMode="HighQuality"
                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
-                    <Border x:Name="DeleteBtn" Width="32" Height="32" CornerRadius="8"
+                    <Border x:Name="DeleteBtn" Width="40" Height="40" CornerRadius="12"
                             Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
                             ToolTip="Delete file"
                             AutomationProperties.Name="Delete file"
@@ -129,7 +129,7 @@
                             KeyDown="DeleteBtn_KeyDown"
                             HorizontalAlignment="Left" VerticalAlignment="Bottom"
                             Margin="8,0,0,8" Opacity="0" Visibility="Collapsed">
-                        <Image x:Name="DeleteIcon" Width="16" Height="16" Stretch="Uniform" Opacity="1"
+                        <Image x:Name="DeleteIcon" Width="18" Height="18" Stretch="Uniform" Opacity="1"
                                RenderOptions.BitmapScalingMode="HighQuality"
                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
@@ -153,19 +153,23 @@
                     <StackPanel Grid.Column="2" VerticalAlignment="Center">
                         <TextBlock x:Name="TitleText" FontSize="12.75" FontWeight="SemiBold"
                                    FontFamily="Segoe UI Variable Text" TextWrapping="Wrap"
+                                   LineHeight="16" LineStackingStrategy="BlockLineHeight"
+                                   MaxHeight="32" ClipToBounds="True" TextTrimming="CharacterEllipsis"
                                    ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"
                                    AutomationProperties.Name="Toast title"
                                    AutomationProperties.HelpText="{Binding Text, RelativeSource={RelativeSource Self}}"
                                    AutomationProperties.LiveSetting="Polite"/>
                         <TextBlock x:Name="BodyText" FontSize="11.5" Opacity="0.72" TextWrapping="Wrap"
                                    FontFamily="Segoe UI Variable Text"
-                                   MaxWidth="292" Margin="0,2,0,0"
+                                   MaxWidth="292" LineHeight="15" LineStackingStrategy="BlockLineHeight"
+                                   MaxHeight="90" ClipToBounds="True" TextTrimming="CharacterEllipsis"
+                                   Margin="0,2,0,0"
                                    ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"
                                    AutomationProperties.Name="Toast message"
                                    AutomationProperties.HelpText="{Binding Text, RelativeSource={RelativeSource Self}}"
                                    AutomationProperties.LiveSetting="Polite"/>
                     </StackPanel>
-                    <Border x:Name="TextCloseBtn" Grid.Column="3" Width="22" Height="22" CornerRadius="6"
+                    <Border x:Name="TextCloseBtn" Grid.Column="3" Width="40" Height="40" CornerRadius="10"
                             Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
                             ToolTip="Close notification"
                             AutomationProperties.Name="Close notification"
@@ -173,9 +177,9 @@
                             Cursor="Hand"
                             Focusable="True"
                             KeyDown="CloseBtn_KeyDown"
-                            VerticalAlignment="Top" Margin="10,-2,-4,0"
+                            VerticalAlignment="Top" Margin="8,-10,-10,0"
                             Visibility="Collapsed">
-                        <Image x:Name="TextCloseIcon" Width="11" Height="11" Stretch="Uniform" Opacity="0.78"
+                        <Image x:Name="TextCloseIcon" Width="12" Height="12" Stretch="Uniform" Opacity="0.78"
                                RenderOptions.BitmapScalingMode="HighQuality"
                                HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>

@@ -218,7 +218,7 @@ public partial class SettingsWindow
                     cancellationToken),
                 cancellationToken);
 
-            if (!IsLoaded || version != _searchFilterVersion || cancellationToken.IsCancellationRequested)
+            if (_isClosed || !IsLoaded || version != _searchFilterVersion || cancellationToken.IsCancellationRequested)
                 return;
 
             EnsureAllImageHistoryItemsMaterialized();
@@ -232,7 +232,7 @@ public partial class SettingsWindow
                 filtered.Add(vm);
             }
 
-            if (!IsLoaded || version != _searchFilterVersion || cancellationToken.IsCancellationRequested)
+            if (_isClosed || !IsLoaded || version != _searchFilterVersion || cancellationToken.IsCancellationRequested)
                 return;
 
             var uploadFilteredItems = ApplyHistoryUploadFilter(filtered).ToList();
@@ -283,10 +283,10 @@ public partial class SettingsWindow
         }
         finally
         {
-            if (version == _searchFilterVersion)
+            if (!_isClosed && IsLoaded && version == _searchFilterVersion)
                 SetImageSearchLoading(false, forceIndexed: true);
 
-            if (version == _searchFilterVersion && searchFailed)
+            if (!_isClosed && IsLoaded && version == _searchFilterVersion && searchFailed)
                 HistorySearchStatusText.Text = "Search failed";
         }
     }
@@ -330,16 +330,16 @@ public partial class SettingsWindow
                 queued++;
                 PrimeThumbLoad(item, () =>
                 {
-                    _ = Dispatcher.BeginInvoke(() =>
+                    _ = TryPostToSettingsDispatcher(() =>
                     {
-                        if (!IsLoaded || HistoryTab.IsChecked != true || HistoryCategoryCombo.SelectedIndex != 0)
+                        if (_isClosed || !IsLoaded || HistoryTab.IsChecked != true || HistoryCategoryCombo.SelectedIndex != 0)
                             return;
 
                         if (string.IsNullOrWhiteSpace(_imageSearchQuery))
                             return;
 
                         QueueImageSearchRefresh();
-                    }, System.Windows.Threading.DispatcherPriority.Background);
+                    }, System.Windows.Threading.DispatcherPriority.Background, "settings.image-search-thumb-post");
                 });
             }
         }

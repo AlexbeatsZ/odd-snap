@@ -7,6 +7,7 @@ namespace OddSnap.Services;
 public static class UpscaleRuntimeService
 {
     private const int RuntimeLayoutVersion = 4;
+    private const long MinModelFileBytes = 1L * 1024 * 1024;
     private const string PipPackage = "pip==26.1";
     private const string SetuptoolsPackage = "setuptools==82.0.1";
     private const string WheelPackage = "wheel==0.47.0";
@@ -46,11 +47,11 @@ public static class UpscaleRuntimeService
         ? "onnxruntime runtime"
         : "onnxruntime";
 
-    public static bool IsModelCached(LocalUpscaleEngine engine) => File.Exists(GetModelPath(engine));
+    public static bool IsModelCached(LocalUpscaleEngine engine) => IsUsableModelFile(GetModelPath(engine));
 
     public static bool HasAnyCachedModels()
     {
-        try { return Directory.Exists(ModelCacheDir) && Directory.EnumerateFiles(ModelCacheDir, "*.onnx").Any(); }
+        try { return Directory.Exists(ModelCacheDir) && Directory.EnumerateFiles(ModelCacheDir, "*.onnx").Any(IsUsableModelFile); }
         catch { return false; }
     }
 
@@ -213,10 +214,13 @@ public static class UpscaleRuntimeService
     public static async Task EnsureModelDownloadedAsync(LocalUpscaleEngine engine, IProgress<LocalUpscaleEngineDownloadProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         var modelPath = GetModelPath(engine);
-        if (File.Exists(modelPath))
+        if (IsUsableModelFile(modelPath))
             return;
 
         Directory.CreateDirectory(ModelCacheDir);
+        if (File.Exists(modelPath))
+            TryDeleteRuntimeTempFile(modelPath, "incomplete upscale model");
+
         var tempPath = modelPath + ".download";
         var url = GetModelDownloadUrl(engine);
         progress?.Report(new LocalUpscaleEngineDownloadProgress(0, null, $"Downloading {LocalUpscaleEngineService.GetEngineLabel(engine)}..."));
@@ -251,6 +255,18 @@ public static class UpscaleRuntimeService
         finally
         {
             TryDeleteRuntimeTempFile(tempPath, "model download");
+        }
+    }
+
+    private static bool IsUsableModelFile(string path)
+    {
+        try
+        {
+            return File.Exists(path) && new FileInfo(path).Length >= MinModelFileBytes;
+        }
+        catch
+        {
+            return false;
         }
     }
 

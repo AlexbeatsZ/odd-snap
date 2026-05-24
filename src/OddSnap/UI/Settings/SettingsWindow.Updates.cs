@@ -9,6 +9,9 @@ namespace OddSnap.UI;
 
 public partial class SettingsWindow
 {
+    private const int VelopackUpdateCheckTimeoutSeconds = 20;
+    private const int VelopackUpdateDownloadTimeoutSeconds = 180;
+
     private async void CheckUpdatesButton_Click(object sender, RoutedEventArgs e)
     {
         await RefreshUpdateStatusAsync(true);
@@ -27,6 +30,9 @@ public partial class SettingsWindow
         }
         catch (Exception ex)
         {
+            if (_isClosed)
+                return;
+
             UpdateStatusText.Text = "Update failed";
             UpdateDetailText.Text = "Try checking again, or open the latest release manually.";
             SetLoadingTextShimmer(UpdateStatusText, false, 1.0, 1.0);
@@ -42,7 +48,7 @@ public partial class SettingsWindow
 
     private async Task RefreshUpdateStatusAsync(bool isManualCheck)
     {
-        if (_updateCheckInFlight)
+        if (_updateCheckInFlight || _isClosed)
             return;
 
         _updateCheckInFlight = true;
@@ -56,6 +62,9 @@ public partial class SettingsWindow
         try
         {
             _latestUpdate = await UpdateService.CheckForUpdatesAsync(forceRefresh: isManualCheck);
+            if (_isClosed)
+                return;
+
             UpdateStatusText.Text = _latestUpdate.StatusMessage;
             SetLoadingTextShimmer(UpdateStatusText, false, 1.0, 1.0);
 
@@ -77,6 +86,9 @@ public partial class SettingsWindow
         }
         catch (Exception ex)
         {
+            if (_isClosed)
+                return;
+
             _latestUpdate = null;
             UpdateStatusText.Text = "Update check failed";
             UpdateDetailText.Text = "Check your connection and try again from Settings -> Updates.";
@@ -91,10 +103,13 @@ public partial class SettingsWindow
         finally
         {
             _updateCheckInFlight = false;
-            CheckUpdatesButton.IsEnabled = true;
-            if (!_updateActionInProgress)
-                DownloadUpdateButton.IsEnabled = true;
-            CheckUpdatesButton.Content = "Check now";
+            if (!_isClosed)
+            {
+                CheckUpdatesButton.IsEnabled = true;
+                if (!_updateActionInProgress)
+                    DownloadUpdateButton.IsEnabled = true;
+                CheckUpdatesButton.Content = "Check now";
+            }
         }
     }
 
@@ -139,15 +154,17 @@ public partial class SettingsWindow
 
     private async Task InstallUpdateAsync()
     {
-        if (_latestUpdate is null)
+        if (_latestUpdate is null || _isClosed)
             return;
+
+        var latestUpdate = _latestUpdate;
 
         if (_updateCheckInFlight)
             return;
 
         if (!CanInstallUpdate())
         {
-            var opened = OpenExternalUrl(GetUpdateFallbackUrl(_latestUpdate));
+            var opened = OpenExternalUrl(GetUpdateFallbackUrl(latestUpdate));
             UpdateStatusText.Text = opened ? "Release opened" : "Open release failed";
             UpdateDetailText.Text = opened
                 ? "Use the installer from GitHub Releases to update this build."
@@ -167,7 +184,13 @@ public partial class SettingsWindow
         try
         {
             var manager = CreateVelopackUpdateManager();
-            var update = await manager.CheckForUpdatesAsync();
+            var update = await WaitForUpdateOperationAsync(
+                manager.CheckForUpdatesAsync(),
+                TimeSpan.FromSeconds(VelopackUpdateCheckTimeoutSeconds),
+                $"Automatic update check timed out after {VelopackUpdateCheckTimeoutSeconds} seconds.");
+            if (_isClosed)
+                return;
+
             if (update is null)
             {
                 UpdateStatusText.Text = "You're up to date";
@@ -178,18 +201,50 @@ public partial class SettingsWindow
 
             UpdateStatusText.Text = "Downloading update...";
             SetLoadingTextShimmer(UpdateStatusText, true, 1.0, 1.0);
-            await manager.DownloadUpdatesAsync(update);
+            using var downloadTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(VelopackUpdateDownloadTimeoutSeconds));
+            await manager.DownloadUpdatesAsync(update, progress =>
+            {
+                if (_isClosed)
+                    return;
+
+                _ = TryPostToSettingsDispatcher(() =>
+                {
+                    if (_isClosed)
+                        return;
+
+                    UpdateStatusText.Text = $"Downloading update... {progress}%";
+                    UpdateDetailText.Text = "Keep OddSnap open until the download finishes.";
+                }, diagnosticKey: "settings.update-download-progress");
+            }, downloadTimeout.Token);
+            if (_isClosed)
+                return;
+
             ToastWindow.Show("Updating OddSnap", "OddSnap will close, update, and reopen.");
             manager.ApplyUpdatesAndRestart(update);
         }
+        catch (OperationCanceledException ex) when (!_isClosed)
+        {
+            UpdateStatusText.Text = "Update timed out";
+            SetLoadingTextShimmer(UpdateStatusText, false, 1.0, 1.0);
+            ToastWindow.ShowError(
+                "Update timed out",
+                $"OddSnap could not finish downloading the update after {VelopackUpdateDownloadTimeoutSeconds} seconds. OddSnap will open the latest setup download so you can install it manually.\n{ex.Message}");
+            var opened = OpenExternalUrl(GetUpdateFallbackUrl(latestUpdate));
+            UpdateDetailText.Text = opened
+                ? "Opened the latest setup download so you can install it manually."
+                : "Automatic update timed out and Windows did not open the fallback download.";
+        }
         catch (Exception ex)
         {
+            if (_isClosed)
+                return;
+
             UpdateStatusText.Text = "Update failed";
             SetLoadingTextShimmer(UpdateStatusText, false, 1.0, 1.0);
             ToastWindow.ShowError(
                 "Update failed",
                 $"OddSnap could not install the update automatically. OddSnap will try to open the latest setup download.\n{ex.Message}");
-            var opened = OpenExternalUrl(GetUpdateFallbackUrl(_latestUpdate));
+            var opened = OpenExternalUrl(GetUpdateFallbackUrl(latestUpdate));
             UpdateDetailText.Text = opened
                 ? "Opened the latest setup download so you can install it manually."
                 : "Automatic update failed and Windows did not open the fallback download.";
@@ -197,24 +252,46 @@ public partial class SettingsWindow
         finally
         {
             _updateCheckInFlight = false;
-            CheckUpdatesButton.IsEnabled = true;
-            if (!_updateActionInProgress)
-                DownloadUpdateButton.IsEnabled = true;
-            CheckUpdatesButton.Content = "Check now";
+            if (!_isClosed)
+            {
+                CheckUpdatesButton.IsEnabled = true;
+                if (!_updateActionInProgress)
+                    DownloadUpdateButton.IsEnabled = true;
+                CheckUpdatesButton.Content = "Check now";
+            }
         }
+    }
+
+    private static async Task<T> WaitForUpdateOperationAsync<T>(Task<T> operation, TimeSpan timeout, string timeoutMessage)
+    {
+        using var timeoutCts = new CancellationTokenSource();
+        var timeoutTask = Task.Delay(timeout, timeoutCts.Token);
+        var completed = await Task.WhenAny(operation, timeoutTask);
+        if (completed == operation)
+        {
+            timeoutCts.Cancel();
+            return await operation;
+        }
+
+        _ = operation.ContinueWith(
+            task =>
+            {
+                if (task.Exception is not null)
+                    AppDiagnostics.LogWarning("settings.update.late-fault", task.Exception.GetBaseException().Message, task.Exception.GetBaseException());
+            },
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
+
+        throw new TimeoutException(timeoutMessage);
     }
 
     private void ResetUpdateActionGuardAfterCooldown()
     {
-        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(UpdateActionCooldownMs) };
-        timer.Tick += (_, _) =>
+        RunAfterSettingsCooldown(UpdateActionCooldownMs, () =>
         {
-            timer.Stop();
             _updateActionInProgress = false;
             if (!_updateCheckInFlight)
                 DownloadUpdateButton.IsEnabled = true;
-        };
-        timer.Start();
+        }, "settings.update-cooldown");
     }
 
     private static bool CanInstallUpdate()

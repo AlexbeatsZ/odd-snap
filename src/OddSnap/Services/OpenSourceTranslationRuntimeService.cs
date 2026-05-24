@@ -6,6 +6,7 @@ public static class OpenSourceTranslationRuntimeService
 {
     private const string PythonLauncherArg = "-3";
     private const string RuntimeVersion = "m2m100-418m-ct2-v2";
+    private const long MinModelFileBytes = 1L * 1024 * 1024;
     private static readonly string[] RuntimePackages =
     [
         "ctranslate2==4.7.1",
@@ -126,12 +127,11 @@ public static class OpenSourceTranslationRuntimeService
             PythonLauncherArg,
             "-c",
             BuildTranslateScript(),
-            text,
             fromCode,
             toCode,
             ModelDir,
             TokenizerDir
-        }, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken, standardInput: text).ConfigureAwait(false);
 
         if (result.ExitCode != 0)
         {
@@ -142,11 +142,12 @@ public static class OpenSourceTranslationRuntimeService
         return result.StdOut.TrimEnd();
     }
 
-    private static Task<ProcessRunResult> RunPythonAsync(IEnumerable<string> arguments, CancellationToken cancellationToken)
+    private static Task<ProcessRunResult> RunPythonAsync(IEnumerable<string> arguments, CancellationToken cancellationToken, string? standardInput = null)
         => ProcessRunner.RunAsync(
             "py",
             arguments,
             cancellationToken,
+            standardInput,
             configure: psi =>
             {
                 psi.EnvironmentVariables["PYTHONUTF8"] = "1";
@@ -254,10 +255,25 @@ public static class OpenSourceTranslationRuntimeService
 
     private static bool HasRuntimeFiles()
     {
-        return File.Exists(Path.Combine(ModelDir, "model.bin")) &&
-               File.Exists(Path.Combine(TokenizerDir, "tokenizer_config.json")) &&
-               File.Exists(RuntimeVersionPath) &&
-               string.Equals(File.ReadAllText(RuntimeVersionPath).Trim(), RuntimeVersion, StringComparison.Ordinal);
+        try
+        {
+            var modelPath = Path.Combine(ModelDir, "model.bin");
+            var tokenizerConfigPath = Path.Combine(TokenizerDir, "tokenizer_config.json");
+            return File.Exists(modelPath) &&
+                   new FileInfo(modelPath).Length >= MinModelFileBytes &&
+                   File.Exists(tokenizerConfigPath) &&
+                   new FileInfo(tokenizerConfigPath).Length > 0 &&
+                   File.Exists(RuntimeVersionPath) &&
+                   string.Equals(File.ReadAllText(RuntimeVersionPath).Trim(), RuntimeVersion, StringComparison.Ordinal);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogWarning(
+                "translation.local.runtime-scan",
+                $"Failed to inspect local translation runtime files: {ex.Message}",
+                ex);
+            return false;
+        }
     }
 
     private static void UpdateProbeCache(bool ready, string status)
@@ -283,8 +299,10 @@ model_dir = sys.argv[1]
 tokenizer_dir = sys.argv[2]
 runtime_version_path = sys.argv[3]
 runtime_version = sys.argv[4]
+model_bin = os.path.join(model_dir, "model.bin")
+min_model_bytes = 1024 * 1024
 
-if not os.path.exists(os.path.join(model_dir, "model.bin")):
+if not os.path.exists(model_bin) or os.path.getsize(model_bin) < min_model_bytes:
     if os.path.isdir(model_dir):
         shutil.rmtree(model_dir)
     Path(model_dir).parent.mkdir(parents=True, exist_ok=True)
@@ -312,11 +330,11 @@ import ctranslate2
 import langid
 from transformers import AutoTokenizer
 
-text = sys.argv[1]
-from_code = sys.argv[2].strip().lower()
-to_code = sys.argv[3].strip().lower()
-model_dir = sys.argv[4]
-tokenizer_dir = sys.argv[5]
+from_code = sys.argv[1].strip().lower()
+to_code = sys.argv[2].strip().lower()
+model_dir = sys.argv[3]
+tokenizer_dir = sys.argv[4]
+text = sys.stdin.read()
 
 aliases = {
     "nb": "no",

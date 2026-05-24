@@ -18,10 +18,11 @@ public sealed class VideoRecorder : IDisposable
     private const int DefaultInitialCaptureDelayMs = 0;
     private const double DurationValidationToleranceSeconds = 0.35d;
     private const int MaxPreviewLongEdge = 640;
-    private const int H264Crf = 18;
-    private const int Vp9Crf = 26;
-    private const string H264ScreenRecordingArgs = "-c:v libx264 -preset veryfast -profile:v high -crf {0} -pix_fmt yuv420p -g {1} -threads 0";
-    private const string Vp9ScreenRecordingArgs = "-c:v libvpx-vp9 -deadline realtime -cpu-used 5 -row-mt 1 -threads 0 -crf {0} -b:v 0 -pix_fmt yuv420p -g {1}";
+    private const int H264Crf = 15;
+    private const int Vp9Crf = 22;
+    private const string H264ScreenRecordingArgs = "-c:v libx264 -preset faster -profile:v high -crf {0} -pix_fmt yuv420p -g {1} -threads 0";
+    private const string Vp9ScreenRecordingArgs = "-c:v libvpx-vp9 -deadline realtime -cpu-used 4 -row-mt 1 -threads 0 -crf {0} -b:v 0 -pix_fmt yuv420p -g {1}";
+    private const string HighQualityScaleFlags = "lanczos+accurate_rnd+full_chroma_int";
     public enum Format { MP4, WebM, MKV }
     private static readonly object FfmpegPathLock = new();
     private static string? _cachedFfmpegPath;
@@ -62,6 +63,8 @@ public sealed class VideoRecorder : IDisposable
     private WasapiLoopbackCapture? _desktopCapture;
     private WaveFileWriter? _micWriter;
     private WaveFileWriter? _desktopWriter;
+    private EventHandler<WaveInEventArgs>? _micDataAvailableHandler;
+    private EventHandler<WaveInEventArgs>? _desktopDataAvailableHandler;
     private string? _micWavPath;
     private string? _desktopWavPath;
     private Bitmap? _firstFramePreview;
@@ -80,7 +83,7 @@ public sealed class VideoRecorder : IDisposable
             return _firstFramePreview is null ? null : new Bitmap(_firstFramePreview);
     }
 
-    public VideoRecorder(Rectangle region, Format format = Format.MP4, int fps = 30,
+    public VideoRecorder(Rectangle region, Format format = Format.MP4, int fps = 60,
                          int maxDurationSeconds = 300, int maxHeight = 0,
                          bool showCursor = false,
                          bool recordMic = false, string? micDeviceId = null,
@@ -127,15 +130,15 @@ public sealed class VideoRecorder : IDisposable
         // Check PATH
         try
         {
-            var psi = new ProcessStartInfo("where", "ffmpeg.exe")
+            var result = RunProcessWithLimitedOutput("where", "ffmpeg.exe", timeoutMs: 3_000, captureStdOut: true);
+            var output = result.StdOut.Trim();
+            if (!result.TimedOut &&
+                result.ExitCode == 0 &&
+                !string.IsNullOrEmpty(output) &&
+                File.Exists(output.Split('\n')[0].Trim()))
             {
-                RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true
-            };
-            using var proc = Process.Start(psi);
-            var output = proc?.StandardOutput.ReadToEnd().Trim();
-            proc?.WaitForExit(3000);
-            if (!string.IsNullOrEmpty(output) && File.Exists(output.Split('\n')[0].Trim()))
                 return output.Split('\n')[0].Trim();
+            }
         }
         catch { }
 
@@ -215,17 +218,19 @@ public sealed class VideoRecorder : IDisposable
         // Compute output dimensions
         int outW = _region.Width;
         int outH = _region.Height;
+        bool scaledRecording = false;
         if (_maxHeight > 0 && outH > _maxHeight)
         {
             double scale = (double)_maxHeight / outH;
             outW = (int)(outW * scale);
             outH = _maxHeight;
+            scaledRecording = true;
+            // Ensure even dimensions for yuv420p encoders after intentional scaling.
+            outW = Math.Max(2, outW / 2 * 2);
+            outH = Math.Max(2, outH / 2 * 2);
         }
-        // Ensure even dimensions (required by H.264/VP9)
-        outW = outW / 2 * 2;
-        outH = outH / 2 * 2;
 
-        string codecArgs = BuildVideoCodecArguments(_format, _fps, _region.Width, _region.Height, outW, outH);
+        string codecArgs = BuildVideoCodecArguments(_format, _fps, _region.Width, _region.Height, outW, outH, scaledRecording);
 
         var args = $"-y -f rawvideo -pix_fmt bgra -s {_region.Width}x{_region.Height} -r {_fps} -i pipe:0 {codecArgs} \"{outputPath}\"";
 
@@ -288,48 +293,119 @@ public sealed class VideoRecorder : IDisposable
         string dir = Path.GetDirectoryName(outputPath) ?? Path.GetTempPath();
 
         if (_recordDesktop)
-        {
-            try
-            {
-                _desktopWavPath = Path.Combine(dir, Path.GetFileNameWithoutExtension(outputPath) + "_desktop.wav");
-                if (string.IsNullOrEmpty(_desktopDeviceId))
-                {
-                    _desktopCapture = new WasapiLoopbackCapture();
-                }
-                else
-                {
-                    using var enumerator = new MMDeviceEnumerator();
-                    _desktopCapture = new WasapiLoopbackCapture(enumerator.GetDevice(_desktopDeviceId));
-                }
-                _desktopWriter = new WaveFileWriter(_desktopWavPath, _desktopCapture.WaveFormat);
-                _desktopCapture.DataAvailable += (s, e) =>
-                {
-                    try { _desktopWriter?.Write(e.Buffer, 0, e.BytesRecorded); } catch { }
-                };
-                _desktopCapture.StartRecording();
-            }
-            catch { _desktopCapture = null; _desktopWriter = null; _desktopWavPath = null; }
-        }
+            StartDesktopAudioCapture(dir, outputPath);
 
         if (_recordMic)
+            StartMicrophoneAudioCapture(dir, outputPath);
+    }
+
+    private void StartDesktopAudioCapture(string dir, string outputPath)
+    {
+        string wavPath = Path.Combine(dir, Path.GetFileNameWithoutExtension(outputPath) + "_desktop.wav");
+        WasapiLoopbackCapture? capture = null;
+        WaveFileWriter? writer = null;
+        EventHandler<WaveInEventArgs>? dataAvailableHandler = null;
+        bool started = false;
+
+        try
         {
-            try
+            if (string.IsNullOrEmpty(_desktopDeviceId))
             {
-                _micWavPath = Path.Combine(dir, Path.GetFileNameWithoutExtension(outputPath) + "_mic.wav");
-                int micDevice = ResolveMicDeviceNumber(_micDeviceId);
-                _micCapture = new WaveInEvent
-                {
-                    DeviceNumber = micDevice,
-                    WaveFormat = new WaveFormat(44100, 16, 1)
-                };
-                _micWriter = new WaveFileWriter(_micWavPath, _micCapture.WaveFormat);
-                _micCapture.DataAvailable += (s, e) =>
-                {
-                    try { _micWriter?.Write(e.Buffer, 0, e.BytesRecorded); } catch { }
-                };
-                _micCapture.StartRecording();
+                capture = new WasapiLoopbackCapture();
             }
-            catch { _micCapture = null; _micWriter = null; _micWavPath = null; }
+            else
+            {
+                using var enumerator = new MMDeviceEnumerator();
+                capture = new WasapiLoopbackCapture(enumerator.GetDevice(_desktopDeviceId));
+            }
+
+            writer = new WaveFileWriter(wavPath, capture.WaveFormat);
+            dataAvailableHandler = (_, e) =>
+            {
+                try { writer?.Write(e.Buffer, 0, e.BytesRecorded); } catch { }
+            };
+            capture.DataAvailable += dataAvailableHandler;
+            capture.StartRecording();
+
+            _desktopWavPath = wavPath;
+            _desktopCapture = capture;
+            _desktopWriter = writer;
+            _desktopDataAvailableHandler = dataAvailableHandler;
+            started = true;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogWarning(
+                "recording.audio-start",
+                $"Desktop audio capture did not start: {ex.Message}",
+                ex);
+        }
+        finally
+        {
+            if (!started)
+            {
+                if (capture is not null && dataAvailableHandler is not null)
+                {
+                    try { capture.DataAvailable -= dataAvailableHandler; } catch { }
+                }
+
+                try { writer?.Dispose(); } catch { }
+                try { capture?.Dispose(); } catch { }
+                TryDeleteRecordingTempFile(wavPath, "failed desktop audio startup");
+            }
+        }
+    }
+
+    private void StartMicrophoneAudioCapture(string dir, string outputPath)
+    {
+        string wavPath = Path.Combine(dir, Path.GetFileNameWithoutExtension(outputPath) + "_mic.wav");
+        WaveInEvent? capture = null;
+        WaveFileWriter? writer = null;
+        EventHandler<WaveInEventArgs>? dataAvailableHandler = null;
+        bool started = false;
+
+        try
+        {
+            int micDevice = ResolveMicDeviceNumber(_micDeviceId);
+            capture = new WaveInEvent
+            {
+                DeviceNumber = micDevice,
+                WaveFormat = new WaveFormat(44100, 16, 1)
+            };
+            writer = new WaveFileWriter(wavPath, capture.WaveFormat);
+            dataAvailableHandler = (_, e) =>
+            {
+                try { writer?.Write(e.Buffer, 0, e.BytesRecorded); } catch { }
+            };
+            capture.DataAvailable += dataAvailableHandler;
+            capture.StartRecording();
+
+            _micWavPath = wavPath;
+            _micCapture = capture;
+            _micWriter = writer;
+            _micDataAvailableHandler = dataAvailableHandler;
+            started = true;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogWarning(
+                "recording.audio-start",
+                $"Microphone audio capture did not start: {ex.Message}",
+                ex);
+        }
+        finally
+        {
+            if (!started)
+            {
+                if (capture is not null && dataAvailableHandler is not null)
+                {
+                    try { capture.DataAvailable -= dataAvailableHandler; } catch { }
+                }
+
+                try { writer?.Dispose(); } catch { }
+                try { capture?.Dispose(); } catch { }
+                TryDeleteRecordingTempFile(wavPath, "failed microphone audio startup");
+            }
         }
     }
 
@@ -498,10 +574,26 @@ public sealed class VideoRecorder : IDisposable
     {
         StopCaptureAndWait(_micCapture);
         StopCaptureAndWait(_desktopCapture);
+        DetachAudioDataHandlers();
         try { _micWriter?.Dispose(); _micWriter = null; } catch { }
         try { _desktopWriter?.Dispose(); _desktopWriter = null; } catch { }
         try { _micCapture?.Dispose(); _micCapture = null; } catch { }
         try { _desktopCapture?.Dispose(); _desktopCapture = null; } catch { }
+    }
+
+    private void DetachAudioDataHandlers()
+    {
+        if (_micCapture is not null && _micDataAvailableHandler is not null)
+        {
+            try { _micCapture.DataAvailable -= _micDataAvailableHandler; } catch { }
+            _micDataAvailableHandler = null;
+        }
+
+        if (_desktopCapture is not null && _desktopDataAvailableHandler is not null)
+        {
+            try { _desktopCapture.DataAvailable -= _desktopDataAvailableHandler; } catch { }
+            _desktopDataAvailableHandler = null;
+        }
     }
 
     private void CapturePreviewFrame(ScreenCapture.RecordingFrameCapturer frameCapturer)
@@ -526,45 +618,39 @@ public sealed class VideoRecorder : IDisposable
             .Cast<string>()
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
-
-        // Determine which audio files exist
-        var audioFiles = new List<string>();
-        if (_desktopWavPath != null && HasMeaningfulAudio(_desktopWavPath))
-            audioFiles.Add(_desktopWavPath);
-        if (_micWavPath != null && HasMeaningfulAudio(_micWavPath))
-            audioFiles.Add(_micWavPath);
-
-        if (audioFiles.Count == 0) return false;
-
-        var ffmpegPath = FindFfmpeg();
-        if (ffmpegPath == null) return false;
-
-        string dir = Path.GetDirectoryName(videoPath)!;
-        string ext = Path.GetExtension(videoPath);
-        string tempOut = Path.Combine(dir, Path.GetFileNameWithoutExtension(videoPath) + "_muxed" + ext);
-        string audioCodec = ext.Equals(".webm", StringComparison.OrdinalIgnoreCase) ? "libopus" : "aac";
-        double targetDurationSeconds = GetCapturedVideoDurationSeconds();
+        string? tempOut = null;
 
         try
         {
-            string args = BuildMuxArguments(videoPath, audioFiles, tempOut, audioCodec, targetDurationSeconds);
+            // Determine which audio files exist
+            var audioFiles = new List<string>();
+            if (_desktopWavPath != null && HasMeaningfulAudio(_desktopWavPath))
+                audioFiles.Add(_desktopWavPath);
+            if (_micWavPath != null && HasMeaningfulAudio(_micWavPath))
+                audioFiles.Add(_micWavPath);
 
-            using var proc = new Process
+            if (audioFiles.Count == 0)
+                return false;
+
+            var ffmpegPath = FindFfmpeg();
+            if (ffmpegPath == null)
             {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = ffmpegPath,
-                    Arguments = args,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardError = true,
-                }
-            };
-            proc.Start();
-            proc.StandardError.ReadToEnd();
-            proc.WaitForExit(30000);
+                AppDiagnostics.LogWarning(
+                    "recording.mux-audio",
+                    $"Audio mux skipped for {Path.GetFileName(videoPath)} because FFmpeg was not found.");
+                return false;
+            }
 
-            if (HasNonEmptyFile(tempOut))
+            string dir = Path.GetDirectoryName(videoPath)!;
+            string ext = Path.GetExtension(videoPath);
+            tempOut = Path.Combine(dir, Path.GetFileNameWithoutExtension(videoPath) + "_muxed" + ext);
+            string audioCodec = ext.Equals(".webm", StringComparison.OrdinalIgnoreCase) ? "libopus" : "aac";
+            double targetDurationSeconds = GetCapturedVideoDurationSeconds();
+
+            string args = BuildMuxArguments(videoPath, audioFiles, tempOut, audioCodec, targetDurationSeconds);
+            var result = RunProcessWithLimitedOutput(ffmpegPath, args, timeoutMs: 30_000);
+
+            if (!result.TimedOut && result.ExitCode == 0 && HasNonEmptyFile(tempOut))
             {
                 File.Delete(videoPath);
                 File.Move(tempOut, videoPath);
@@ -573,6 +659,11 @@ public sealed class VideoRecorder : IDisposable
             else
             {
                 // Mux failed — keep the original video without audio
+                AppDiagnostics.LogWarning(
+                    "recording.mux-audio",
+                    result.TimedOut
+                        ? $"Audio mux timed out for {Path.GetFileName(videoPath)}."
+                        : $"Audio mux failed for {Path.GetFileName(videoPath)}. FFmpeg exit={result.ExitCode}. {result.StdErr}");
                 TryDeleteRecordingTempFile(tempOut, "failed mux output");
             }
         }
@@ -718,9 +809,18 @@ public sealed class VideoRecorder : IDisposable
         _cts.Cancel();
         lock (_pauseLock) { _isPaused = false; Monitor.PulseAll(_pauseLock); }
         try { _delayedAudioStartThread?.Join(3_000); } catch { }
+        JoinThreadIfNotCurrent(_captureThread, 3_000);
         StopAudioCapture();
+        TryDeleteRecordingTempFile(_micWavPath, "disposed mic audio");
+        TryDeleteRecordingTempFile(_desktopWavPath, "disposed desktop audio");
         try { _ffmpegBufferedStdin?.Dispose(); } catch { }
         try { _ffmpegStdin?.Dispose(); } catch { }
+        try
+        {
+            if (_ffmpeg is { HasExited: false })
+                _ffmpeg.Kill(entireProcessTree: true);
+        }
+        catch { }
         try { _ffmpeg?.Dispose(); } catch { }
         lock (_previewFrameLock)
         {
@@ -728,6 +828,14 @@ public sealed class VideoRecorder : IDisposable
             _firstFramePreview = null;
         }
         _cts.Dispose();
+    }
+
+    private static void JoinThreadIfNotCurrent(Thread? thread, int timeoutMs)
+    {
+        if (thread is null || !thread.IsAlive || ReferenceEquals(thread, Thread.CurrentThread))
+            return;
+
+        try { thread.Join(timeoutMs); } catch { }
     }
 
     private static bool HasMeaningfulAudio(string path)
@@ -787,26 +895,15 @@ public sealed class VideoRecorder : IDisposable
         try
         {
             string args = BuildRepairArguments(outputPath, tempOut, actualDuration, hasAudioTrack);
-            using var proc = new Process
-            {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = ffmpegPath,
-                    Arguments = args,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardError = true,
-                }
-            };
-            proc.Start();
-            string stderr = proc.StandardError.ReadToEnd();
-            proc.WaitForExit(60_000);
+            var result = RunProcessWithLimitedOutput(ffmpegPath, args, timeoutMs: 60_000);
 
-            if (proc.ExitCode != 0 || !HasNonEmptyFile(tempOut))
+            if (result.TimedOut || result.ExitCode != 0 || !HasNonEmptyFile(tempOut))
             {
                 AppDiagnostics.LogWarning(
                     "recording.duration-repair",
-                    $"Repair failed for {Path.GetFileName(outputPath)}. FFmpeg exit={proc.ExitCode}. {stderr}");
+                    result.TimedOut
+                        ? $"Repair timed out for {Path.GetFileName(outputPath)}."
+                        : $"Repair failed for {Path.GetFileName(outputPath)}. FFmpeg exit={result.ExitCode}. {result.StdErr}");
                 TryDeleteRecordingTempFile(tempOut, "failed repair output");
                 return;
             }
@@ -852,22 +949,8 @@ public sealed class VideoRecorder : IDisposable
         durationSeconds = 0d;
         try
         {
-            using var proc = new Process
-            {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = ffmpegPath,
-                    Arguments = $"-hide_banner -i \"{mediaPath}\"",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardError = true,
-                }
-            };
-
-            proc.Start();
-            string stderr = proc.StandardError.ReadToEnd();
-            proc.WaitForExit(30_000);
-            return TryParseMediaDuration(stderr, out durationSeconds);
+            var result = RunProcessWithLimitedOutput(ffmpegPath, $"-hide_banner -i \"{mediaPath}\"", timeoutMs: 30_000);
+            return !result.TimedOut && TryParseMediaDuration(result.StdErr, out durationSeconds);
         }
         catch
         {
@@ -882,18 +965,37 @@ public sealed class VideoRecorder : IDisposable
         _ => $"{BuildH264ScreenRecordingArguments(fps)} -movflags +faststart",
     };
 
-    internal static string BuildVideoCodecArguments(Format format, int fps, int inputWidth, int inputHeight, int outputWidth, int outputHeight)
+    internal static string BuildVideoCodecArguments(Format format, int fps, int inputWidth, int inputHeight, int outputWidth, int outputHeight, bool scaleToOutput)
     {
-        string scaleFilter = inputWidth == outputWidth && inputHeight == outputHeight
-            ? string.Empty
-            : $" -vf scale={outputWidth}:{outputHeight}:flags=lanczos";
+        string filterArgs = BuildVideoFilterArguments(inputWidth, inputHeight, outputWidth, outputHeight, scaleToOutput);
 
         return format switch
         {
-            Format.WebM => $"{BuildVp9ScreenRecordingArguments(fps)}{scaleFilter}",
-            Format.MKV => $"{BuildH264ScreenRecordingArguments(fps)}{scaleFilter}",
-            _ => $"{BuildH264ScreenRecordingArguments(fps)}{scaleFilter} -movflags +faststart",
+            Format.WebM => $"{BuildVp9ScreenRecordingArguments(fps)}{filterArgs}",
+            Format.MKV => $"{BuildH264ScreenRecordingArguments(fps)}{filterArgs}",
+            _ => $"{BuildH264ScreenRecordingArguments(fps)}{filterArgs} -movflags +faststart",
         };
+    }
+
+    private static string BuildVideoFilterArguments(int inputWidth, int inputHeight, int outputWidth, int outputHeight, bool scaleToOutput)
+    {
+        var filters = new List<string>();
+        int filteredWidth = inputWidth;
+        int filteredHeight = inputHeight;
+
+        if (scaleToOutput && outputWidth > 0 && outputHeight > 0)
+        {
+            filters.Add($"scale={outputWidth}:{outputHeight}:flags={HighQualityScaleFlags}");
+            filteredWidth = outputWidth;
+            filteredHeight = outputHeight;
+        }
+
+        if (filteredWidth % 2 != 0 || filteredHeight % 2 != 0)
+            filters.Add("pad=ceil(iw/2)*2:ceil(ih/2)*2");
+
+        return filters.Count == 0
+            ? string.Empty
+            : $" -vf \"{string.Join(",", filters)}\"";
     }
 
     private static string BuildH264ScreenRecordingArguments(int fps)
@@ -922,6 +1024,57 @@ public sealed class VideoRecorder : IDisposable
             "recording.stats",
             $"{Path.GetFileName(outputPath)} duration={GetCapturedVideoDurationSeconds():F3}s encodedFrames={FrameCount} capturedFrames={CapturedFrameCount} duplicatedFrames={DuplicatedFrameCount} droppedFrames={DroppedFrameCount}");
     }
+
+    private static ProcessCaptureResult RunProcessWithLimitedOutput(string fileName, string arguments, int timeoutMs, bool captureStdOut = false)
+    {
+        using var errorMode = WindowsErrorModeScope.SuppressSystemDialogs();
+        using var proc = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = captureStdOut,
+                RedirectStandardError = true,
+            }
+        };
+
+        var stdout = captureStdOut ? new LimitedTextBuffer(32_768) : null;
+        var stderr = new LimitedTextBuffer(32_768);
+        if (captureStdOut)
+        {
+            proc.OutputDataReceived += (_, e) =>
+            {
+                if (!string.IsNullOrWhiteSpace(e.Data))
+                    stdout?.AppendLine(e.Data);
+            };
+        }
+
+        proc.ErrorDataReceived += (_, e) =>
+        {
+            if (!string.IsNullOrWhiteSpace(e.Data))
+                stderr.AppendLine(e.Data);
+        };
+
+        proc.Start();
+        if (captureStdOut)
+            proc.BeginOutputReadLine();
+        proc.BeginErrorReadLine();
+
+        if (!proc.WaitForExit(timeoutMs))
+        {
+            try { proc.Kill(entireProcessTree: true); } catch { }
+            try { proc.WaitForExit(2_000); } catch { }
+            return new ProcessCaptureResult(-1, stdout?.ToString() ?? "", stderr.ToString(), TimedOut: true);
+        }
+
+        try { proc.WaitForExit(500); } catch { }
+        return new ProcessCaptureResult(proc.ExitCode, stdout?.ToString() ?? "", stderr.ToString(), TimedOut: false);
+    }
+
+    private sealed record ProcessCaptureResult(int ExitCode, string StdOut, string StdErr, bool TimedOut);
 
     private sealed class LimitedTextBuffer(int maxChars)
     {

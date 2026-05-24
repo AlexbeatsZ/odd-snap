@@ -17,6 +17,7 @@ public static class TranslationService
     private const string PythonLauncherArg = "-3";
     private const string ArgosTranslateVersion = "1.11.0";
     private const string ArgosTranslatePackage = "argostranslate==" + ArgosTranslateVersion;
+    private const long MaxGoogleTranslateResponseBytes = 1L * 1024 * 1024;
     private static readonly TimeSpan ArgosProbeCacheTtl = TimeSpan.FromMinutes(10);
     private static readonly HttpClient GoogleHttp = CreateGoogleHttpClient();
     private static readonly string ArgosStateDir = Path.Combine(
@@ -271,8 +272,8 @@ public static class TranslationService
         // Argos Translate
         var result = await RunPythonAsync(new[]
         {
-            PythonLauncherArg, "-c", BuildArgosTranslateScript(), text, fromCode, toCode
-        }, cancellationToken).ConfigureAwait(false);
+            PythonLauncherArg, "-c", BuildArgosTranslateScript(), fromCode, toCode
+        }, cancellationToken, standardInput: text).ConfigureAwait(false);
 
         if (result.ExitCode != 0)
         {
@@ -363,7 +364,10 @@ public static class TranslationService
         };
 
         using var response = await GoogleHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-        var payload = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var payload = await HttpContentReader.ReadLimitedStringAsync(
+            response.Content,
+            MaxGoogleTranslateResponseBytes,
+            cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(ExtractGoogleError(payload) ?? $"Google Translate request failed ({(int)response.StatusCode}).");
 
@@ -381,11 +385,12 @@ public static class TranslationService
         return result.ExitCode == 0;
     }
 
-    private static Task<ProcessRunResult> RunPythonAsync(IEnumerable<string> arguments, CancellationToken cancellationToken)
+    private static Task<ProcessRunResult> RunPythonAsync(IEnumerable<string> arguments, CancellationToken cancellationToken, string? standardInput = null)
         => ProcessRunner.RunAsync(
             "py",
             arguments,
             cancellationToken,
+            standardInput,
             configure: psi =>
             {
                 psi.EnvironmentVariables["PYTHONUTF8"] = "1";
@@ -438,9 +443,9 @@ public static class TranslationService
 import sys
 import argostranslate.translate as tr
 
-text = sys.argv[1]
-from_code = sys.argv[2]
-to_code = sys.argv[3]
+from_code = sys.argv[1]
+to_code = sys.argv[2]
+text = sys.stdin.read()
 
 # Check if language pack is installed, install if needed
 installed = tr.get_installed_languages()

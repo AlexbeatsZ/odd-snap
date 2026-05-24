@@ -391,11 +391,14 @@ public partial class SettingsWindow
     {
         ImageSearchFiltersMenu.PlacementTarget = ImageSearchFiltersBtn;
         ImageSearchFiltersMenu.IsOpen = true;
-        _ = Dispatcher.BeginInvoke(() =>
+        _ = TryPostToSettingsDispatcher(() =>
         {
+            if (_isClosed || !IsLoaded)
+                return;
+
             ImageSearchFileNameCheck.Focus();
             Keyboard.Focus(ImageSearchFileNameCheck);
-        });
+        }, System.Windows.Threading.DispatcherPriority.Background, "settings.image-search-filter-focus-post");
     }
 
     private void HistoryPanel_ScrollChanged(object sender, ScrollChangedEventArgs e)
@@ -436,10 +439,10 @@ public partial class SettingsWindow
 
         _historyItems.AddRange(appended);
         AppendGroupedHistoryItems(HistoryStack, appended, CreateHistoryCard);
-        _ = Dispatcher.BeginInvoke(() =>
+        _ = TryPostToSettingsDispatcher(() =>
         {
-            if (IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 0)
+            if (!_isClosed && IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 0)
                 ImagesPanel.ScrollToVerticalOffset(previousOffset);
-        }, System.Windows.Threading.DispatcherPriority.Background);
+        }, System.Windows.Threading.DispatcherPriority.Background, "settings.image-history-scroll-post");
     }
 }

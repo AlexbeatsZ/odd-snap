@@ -59,6 +59,7 @@ public partial class SettingsWindow
         _codeRenderCount = Math.Min(HistoryInitialPageSize, _filteredCodeEntries.Count);
         _codeLastRenderedDate = null;
         AppendCodeHistoryEntries(_filteredCodeEntries, 0, _codeRenderCount);
+        PruneCodeSearchCache(allEntries);
         UpdateHistoryActionButtons();
         sw.Stop();
         AppDiagnostics.LogInfo(
@@ -81,11 +82,12 @@ public partial class SettingsWindow
         var previousCount = _codeRenderCount;
         _codeRenderCount = Math.Min(_codeRenderCount + HistoryAppendPageSize, _filteredCodeEntries.Count);
         AppendCodeHistoryEntries(_filteredCodeEntries, previousCount, _codeRenderCount - previousCount);
-        _ = Dispatcher.BeginInvoke(() =>
+        PruneCodeSearchCache(_historyService.CodeEntries);
+        _ = TryPostToSettingsDispatcher(() =>
         {
-            if (IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 5)
+            if (!_isClosed && IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 5)
                 CodesPanel.ScrollToVerticalOffset(previousOffset);
-        }, System.Windows.Threading.DispatcherPriority.Background);
+        }, System.Windows.Threading.DispatcherPriority.Background, "settings.code-history-scroll-post");
     }
 
     private void FlushCodeSearchDebounce(object? sender, EventArgs e)
@@ -194,6 +196,7 @@ public partial class SettingsWindow
 
         var formatLabel = HumanizeBarcodeFormat(entry.Format);
         var isUrl = TryNormalizeUrl(entry.Text, out var url);
+        var capturedText = entry.Text ?? "";
         AutomationProperties.SetName(card, $"{formatLabel} history item");
         AutomationProperties.SetHelpText(card, "Press Enter or Space to copy this QR/barcode text. In select mode, press Enter or Space to select it.");
         preview.ToolTip = $"{formatLabel} preview";
@@ -202,7 +205,7 @@ public partial class SettingsWindow
 
         var primary = new TextBlock
         {
-            Text = entry.Text,
+            Text = BuildTextHistoryPreview(capturedText, 700),
             FontSize = 12,
             LineHeight = 16,
             TextWrapping = TextWrapping.Wrap,
@@ -211,9 +214,9 @@ public partial class SettingsWindow
             Foreground = Theme.Brush(Theme.TextPrimary),
             Opacity = 0.92
         };
-        primary.ToolTip = entry.Text;
+        primary.ToolTip = BuildTextHistoryTooltip(capturedText);
         AutomationProperties.SetName(primary, $"{formatLabel} text");
-        AutomationProperties.SetHelpText(primary, entry.Text);
+        AutomationProperties.SetHelpText(primary, BuildTextHistoryHelpText(capturedText));
         infoStack.Children.Add(primary);
 
         var metadataText = $"{formatLabel} · {FormatTimeAgo(entry.CapturedAt)}";
@@ -245,7 +248,9 @@ public partial class SettingsWindow
             {
                 Content = "Open",
                 FontSize = 10,
-                Padding = new Thickness(8, 3, 8, 3),
+                MinWidth = 58,
+                MinHeight = 32,
+                Padding = new Thickness(10, 4, 10, 4),
                 Margin = new Thickness(0, 0, 6, 0),
                 VerticalAlignment = VerticalAlignment.Center,
                 Cursor = System.Windows.Input.Cursors.Hand,
@@ -261,14 +266,15 @@ public partial class SettingsWindow
         {
             Content = "Copy",
             FontSize = 10,
-            Padding = new Thickness(8, 3, 8, 3),
+            MinWidth = 58,
+            MinHeight = 32,
+            Padding = new Thickness(10, 4, 10, 4),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = System.Windows.Input.Cursors.Hand,
             ToolTip = "Copy this QR/barcode text"
         };
         AutomationProperties.SetName(copyBtn, "Copy code text");
         AutomationProperties.SetHelpText(copyBtn, "Copy this QR/barcode text to the clipboard.");
-        var capturedText = entry.Text;
         copyBtn.Click += (_, _) => CopyCodeText();
         btnPanel.Children.Add(copyBtn);
         grid.Children.Add(btnPanel);
@@ -305,6 +311,9 @@ public partial class SettingsWindow
 
         card.MouseLeftButtonDown += (_, e) =>
         {
+            if (IsHistoryActionButtonClick(e.OriginalSource))
+                return;
+
             e.Handled = true;
             if (_selectMode)
             {
@@ -338,6 +347,13 @@ public partial class SettingsWindow
 
         try
         {
+            if (string.IsNullOrWhiteSpace(entry.Text) || entry.Text.Length > 2048)
+            {
+                var blank = CreateBlankCodePreview();
+                _codePreviewCache[entry] = blank;
+                return blank;
+            }
+
             var format = ParseBarcodeFormat(entry.Format);
             using var bmp = BarcodeService.RenderPreview(entry.Text, format);
             var src = BitmapPerf.ToBitmapSource(bmp);
@@ -346,29 +362,26 @@ public partial class SettingsWindow
         }
         catch
         {
-            using var fallback = new Bitmap(64, 64);
-            using var g = Graphics.FromImage(fallback);
-            g.Clear(System.Drawing.Color.Transparent);
-            var src = BitmapPerf.ToBitmapSource(fallback);
+            var src = CreateBlankCodePreview();
             _codePreviewCache[entry] = src;
             return src;
         }
     }
 
+    private static BitmapSource CreateBlankCodePreview()
+    {
+        using var fallback = new Bitmap(64, 64);
+        using var g = Graphics.FromImage(fallback);
+        g.Clear(System.Drawing.Color.Transparent);
+        return BitmapPerf.ToBitmapSource(fallback);
+    }
+
     private void PruneCodeSearchCache(IReadOnlyCollection<CodeHistoryEntry> currentEntries)
     {
-        if (_codeSearchTextCache.Count <= currentEntries.Count + 64 &&
-            _codeHistoryCardCache.Count <= currentEntries.Count + 64 &&
-            _codePreviewCache.Count <= currentEntries.Count + 64)
-            return;
-
-        var current = currentEntries.ToHashSet();
-        foreach (var entry in _codeSearchTextCache.Keys.Where(entry => !current.Contains(entry)).ToList())
-            _codeSearchTextCache.Remove(entry);
-        foreach (var entry in _codeHistoryCardCache.Keys.Where(entry => !current.Contains(entry)).ToList())
-            _codeHistoryCardCache.Remove(entry);
-        foreach (var entry in _codePreviewCache.Keys.Where(entry => !current.Contains(entry)).ToList())
-            _codePreviewCache.Remove(entry);
+        var entries = currentEntries as IReadOnlyList<CodeHistoryEntry> ?? currentEntries.ToList();
+        PruneHistoryCache(_codeSearchTextCache, entries, TextHistorySearchCacheLimit);
+        PruneHistoryCache(_codeHistoryCardCache, entries, TextHistoryCardCacheLimit);
+        PruneHistoryCache(_codePreviewCache, entries, TextHistoryCardCacheLimit);
     }
 
     private bool CodeMatchesCachedTerms(CodeHistoryEntry entry, IReadOnlyList<string> terms)

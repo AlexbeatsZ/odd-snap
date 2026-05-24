@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Threading;
 using OddSnap.Services;
 using ComboBox = System.Windows.Controls.ComboBox;
 using ComboBoxItem = System.Windows.Controls.ComboBoxItem;
@@ -62,9 +63,33 @@ public partial class OcrResultWindow : Window
         if (!_lifecycle.TryBeginClose())
             return;
 
-        _translateCts?.Cancel();
+        CancelActiveTranslation();
         StopTranslateTimer();
         Close();
+    }
+
+    private bool TryPostToResultDispatcher(
+        Action action,
+        DispatcherPriority priority = DispatcherPriority.Normal,
+        string diagnosticKey = "ocr-result.dispatcher-post")
+    {
+        if (_lifecycle.IsCloseRequested ||
+            Dispatcher.HasShutdownStarted ||
+            Dispatcher.HasShutdownFinished)
+        {
+            return false;
+        }
+
+        try
+        {
+            _ = Dispatcher.BeginInvoke(action, priority);
+            return true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            AppDiagnostics.LogWarning(diagnosticKey, ex.Message, ex);
+            return false;
+        }
     }
 
     private void ApplyTheme()
@@ -152,11 +177,7 @@ public partial class OcrResultWindow : Window
 
     private void ResetTranslationForTranslationInputChange()
     {
-        if (_translateCts is not null)
-        {
-            _translateCts.Cancel();
-            _translateCts = null;
-        }
+        CancelActiveTranslation();
 
         StopTranslationConfigurationCheck();
         StopTranslationLoading(keepStatusVisible: false);
@@ -179,7 +200,7 @@ public partial class OcrResultWindow : Window
         {
             ClipboardService.CopyTextToClipboard(text);
             SoundService.PlayTextSound();
-            ToastWindow.Show(ToastSpec.Standard("Copied", FormatCopyToastPreview(text)) with { SuppressSound = true });
+            ToastWindow.Show(ToastSpec.Standard("Copied", ToastSpec.CompactTextPreview(text)) with { SuppressSound = true });
         }
         catch (Exception ex)
         {
@@ -202,7 +223,7 @@ public partial class OcrResultWindow : Window
         {
             ClipboardService.CopyTextToClipboard(text);
             SoundService.PlayTextSound();
-            ToastWindow.Show(ToastSpec.Standard("Copied translation", FormatCopyToastPreview(text)) with { SuppressSound = true });
+            ToastWindow.Show(ToastSpec.Standard("Copied translation", ToastSpec.CompactTextPreview(text)) with { SuppressSound = true });
         }
         catch (Exception ex)
         {
@@ -210,12 +231,6 @@ public partial class OcrResultWindow : Window
                 "Copy failed",
                 $"OddSnap could not copy the translated text. Keep the result window open and try again.\n{ex.Message}");
         }
-    }
-
-    private static string FormatCopyToastPreview(string text)
-    {
-        var preview = string.Join(" ", text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        return preview.Length > 80 ? preview[..80] + "..." : preview;
     }
 
     private void Window_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
@@ -232,15 +247,27 @@ public partial class OcrResultWindow : Window
         if (!_lifecycle.ShouldCloseOnDeactivate(IsLoaded, WindowState == WindowState.Minimized))
             return;
 
-        CloseWindow();
+        if (IsTranslationDropdownOpen())
+            return;
+
+        _ = TryPostToResultDispatcher(() =>
+        {
+            if (!_lifecycle.ShouldCloseOnDeactivate(IsLoaded, WindowState == WindowState.Minimized))
+                return;
+
+            if (!IsTranslationDropdownOpen() && !IsActive)
+                CloseWindow();
+        }, DispatcherPriority.Background, "ocr-result.deactivate-close-post");
     }
 
     protected override void OnClosed(EventArgs e)
     {
-        _translateCts?.Cancel();
-        _translateCts?.Dispose();
-        _translateCts = null;
+        _lifecycle.TryBeginClose();
+        CancelActiveTranslation();
+        OcrTextBox.TextChanged -= OcrTextBox_TextChanged;
         StopTranslateTimer();
+        _fromLanguageItems.Clear();
+        _toLanguageItems.Clear();
         base.OnClosed(e);
     }
 
@@ -385,6 +412,11 @@ public partial class OcrResultWindow : Window
         return TranslationModel.OpenSourceLocal;
     }
 
+    private bool IsTranslationDropdownOpen() =>
+        FromLanguageCombo.IsDropDownOpen ||
+        ToLanguageCombo.IsDropDownOpen ||
+        ModelCombo.IsDropDownOpen;
+
     private void SelectTranslationModelCombo(int rawValue)
     {
         var selected = ModelCombo.Items.OfType<ComboBoxItem>()
@@ -401,22 +433,42 @@ public partial class OcrResultWindow : Window
 
     private void FilterCombo_PreviewTextInput(object sender, TextCompositionEventArgs e)
     {
+        if (_lifecycle.IsCloseRequested)
+            return;
+
         if (sender is not ComboBox combo) return;
         combo.IsDropDownOpen = true;
-        Dispatcher.BeginInvoke(new Action(() => FilterComboItems(combo)), System.Windows.Threading.DispatcherPriority.Background);
+        QueueComboFilter(combo);
     }
 
     private void FilterCombo_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
+        if (_lifecycle.IsCloseRequested)
+            return;
+
         if (e.Key == Key.Back || e.Key == Key.Delete)
         {
             if (sender is ComboBox combo)
-                Dispatcher.BeginInvoke(new Action(() => FilterComboItems(combo)), System.Windows.Threading.DispatcherPriority.Background);
+                QueueComboFilter(combo);
         }
+    }
+
+    private void QueueComboFilter(ComboBox combo)
+    {
+        _ = TryPostToResultDispatcher(() =>
+        {
+            if (_lifecycle.IsCloseRequested || !IsLoaded || !combo.IsLoaded)
+                return;
+
+            FilterComboItems(combo);
+        }, DispatcherPriority.Background, "ocr-result.combo-filter-post");
     }
 
     private void FilterComboItems(ComboBox combo)
     {
+        if (_lifecycle.IsCloseRequested || !IsLoaded || !combo.IsLoaded)
+            return;
+
         var editText = combo.Text?.Trim() ?? "";
         var allItems = combo == FromLanguageCombo ? _fromLanguageItems : _toLanguageItems;
 
@@ -500,24 +552,38 @@ public partial class OcrResultWindow : Window
 
     private void StartTranslateTimer()
     {
+        StopTranslateTimer();
         _translateStartTime = DateTime.Now;
         _translateTimer = new System.Windows.Threading.DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(500)
         };
-        _translateTimer.Tick += (_, _) =>
-        {
-            var elapsed = (int)(DateTime.Now - _translateStartTime).TotalSeconds;
-            UpdateTranslateStatusText(elapsed);
-        };
+        _translateTimer.Tick += TranslateTimer_Tick;
         _translateTimer.Start();
         UpdateTranslateStatusText(0);
     }
 
     private void StopTranslateTimer()
     {
-        _translateTimer?.Stop();
+        var timer = _translateTimer;
         _translateTimer = null;
+        if (timer is null)
+            return;
+
+        timer.Tick -= TranslateTimer_Tick;
+        timer.Stop();
+    }
+
+    private void TranslateTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_lifecycle.IsCloseRequested)
+        {
+            StopTranslateTimer();
+            return;
+        }
+
+        var elapsed = (int)(DateTime.Now - _translateStartTime).TotalSeconds;
+        UpdateTranslateStatusText(elapsed);
     }
 
     private void StartTranslationConfigurationCheck()
@@ -526,8 +592,8 @@ public partial class OcrResultWindow : Window
         TranslateStatus.Visibility = Visibility.Visible;
         TranslateStatus.Text = "Checking translation setup...";
         CopyTranslationBtn.Visibility = Visibility.Collapsed;
-        TranslateBtn.IsEnabled = false;
-        TranslateBtn.Content = "Checking...";
+        TranslateBtn.IsEnabled = true;
+        TranslateBtn.Content = "Cancel";
     }
 
     private void StopTranslationConfigurationCheck()
@@ -542,8 +608,8 @@ public partial class OcrResultWindow : Window
         TranslateStatus.Visibility = Visibility.Visible;
         TranslationLoadingOverlay.Visibility = Visibility.Visible;
         CopyTranslationBtn.Visibility = Visibility.Collapsed;
-        TranslateBtn.IsEnabled = false;
-        TranslateBtn.Content = "Translating...";
+        TranslateBtn.IsEnabled = true;
+        TranslateBtn.Content = "Cancel";
         FromLanguageCombo.IsEnabled = false;
         ToLanguageCombo.IsEnabled = false;
         ModelCombo.IsEnabled = false;
@@ -595,6 +661,26 @@ public partial class OcrResultWindow : Window
         return ReferenceEquals(_translateCts, requestCts);
     }
 
+    private void CancelActiveTranslation()
+    {
+        var cts = _translateCts;
+        _translateCts = null;
+        if (cts is null)
+            return;
+
+        try { cts.Cancel(); }
+        catch (ObjectDisposedException) { }
+    }
+
+    private void CancelTranslationFromUser()
+    {
+        CancelActiveTranslation();
+        StopTranslationConfigurationCheck();
+        StopTranslationLoading(keepStatusVisible: true);
+        SetTranslationIdleStatus("Translation canceled.");
+        CopyTranslationBtn.Visibility = Visibility.Collapsed;
+    }
+
     private static string GetTranslationStatusLabel(TranslationModel model, int elapsedSeconds)
     {
         if (elapsedSeconds <= 1)
@@ -608,6 +694,12 @@ public partial class OcrResultWindow : Window
 
     private async void TranslateBtn_Click(object sender, RoutedEventArgs e)
     {
+        if (_translateCts is not null)
+        {
+            CancelTranslationFromUser();
+            return;
+        }
+
         var text = OcrTextBox.Text;
         if (string.IsNullOrWhiteSpace(text))
         {
@@ -628,7 +720,8 @@ public partial class OcrResultWindow : Window
             toItem.Tag as string,
             _settingsService.Settings.InterfaceLanguage);
 
-        _translateCts?.Cancel();
+        CancelActiveTranslation();
+        StopTranslateTimer();
         _translateCts = new CancellationTokenSource();
         var requestCts = _translateCts;
         var token = requestCts.Token;
@@ -691,8 +784,16 @@ public partial class OcrResultWindow : Window
             if (_lifecycle.IsCloseRequested)
                 return;
 
-            if (IsActiveTranslationRequest(requestCts))
+            if (!IsActiveTranslationRequest(requestCts))
+                return;
+
+            if (token.IsCancellationRequested)
+            {
                 StopTranslationLoading(keepStatusVisible: false);
+                return;
+            }
+
+            ShowTranslateError("Translation did not finish. Check your connection or try a shorter selection.");
         }
         catch (Exception ex)
         {

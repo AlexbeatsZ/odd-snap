@@ -16,6 +16,7 @@ internal static class SettingsMediaCache
     private static readonly HashSet<string> ThumbInflight = new(StringComparer.OrdinalIgnoreCase);
     private static readonly object ThumbWarmGate = new();
     private static CancellationTokenSource? ThumbWarmCts;
+    private static Task? ThumbWarmTask;
 
     public static bool TryGetThumb(string path, out BitmapSource? image)
     {
@@ -56,11 +57,7 @@ internal static class SettingsMediaCache
     public static void Clear()
     {
         lock (ThumbWarmGate)
-        {
-            ThumbWarmCts?.Cancel();
-            ThumbWarmCts?.Dispose();
-            ThumbWarmCts = null;
-        }
+            CancelCurrentWarmup_NoLock();
 
         lock (ThumbCache)
         {
@@ -102,6 +99,12 @@ internal static class SettingsMediaCache
         }
     }
 
+    public static void CancelWarmup()
+    {
+        lock (ThumbWarmGate)
+            CancelCurrentWarmup_NoLock();
+    }
+
     public static void WarmRecentHistoryThumbs(IEnumerable<HistoryEntry> entries, Action<string, string, HistoryKind> primeThumbLoad, int maxCount = 12)
     {
         foreach (var entry in entries
@@ -121,35 +124,88 @@ internal static class SettingsMediaCache
             .Take(maxCount)
             .ToList();
 
+        CancelWarmup();
+
         if (targets.Count == 0)
             return;
 
         WarmRecentHistoryThumbs(targets, primeThumbLoad, Math.Min(immediateCount, targets.Count));
 
+        var deferredTargets = targets.Skip(immediateCount).ToList();
+        if (deferredTargets.Count == 0)
+            return;
+
         CancellationTokenSource cts;
         lock (ThumbWarmGate)
         {
-            ThumbWarmCts?.Cancel();
-            ThumbWarmCts?.Dispose();
             ThumbWarmCts = new CancellationTokenSource();
             cts = ThumbWarmCts;
         }
+        var token = cts.Token;
+        var effectiveBatchSize = Math.Max(1, batchSize);
 
-        _ = Task.Run(async () =>
+        var warmTask = Task.Run(async () =>
         {
             try
             {
-                foreach (var batch in targets.Skip(immediateCount).Chunk(batchSize))
+                foreach (var batch in deferredTargets.Chunk(effectiveBatchSize))
                 {
-                    cts.Token.ThrowIfCancellationRequested();
+                    token.ThrowIfCancellationRequested();
                     WarmRecentHistoryThumbs(batch, primeThumbLoad, batch.Length);
-                    await Task.Delay(180, cts.Token);
+                    await Task.Delay(180, token);
                 }
             }
             catch (OperationCanceledException)
             {
             }
-        }, cts.Token);
+            catch (Exception ex)
+            {
+                AppDiagnostics.LogWarning(
+                    "settings.media-cache.warm",
+                    $"Failed to warm history thumbnails: {ex.Message}",
+                    ex);
+            }
+        });
+
+        lock (ThumbWarmGate)
+        {
+            if (ReferenceEquals(ThumbWarmCts, cts))
+                ThumbWarmTask = warmTask;
+            else
+                DisposeWarmupSourceWhenSettled(cts, warmTask);
+        }
+    }
+
+    private static void CancelCurrentWarmup_NoLock()
+    {
+        var cts = ThumbWarmCts;
+        var task = ThumbWarmTask;
+        ThumbWarmCts = null;
+        ThumbWarmTask = null;
+
+        if (cts is null)
+            return;
+
+        try { cts.Cancel(); } catch { }
+        DisposeWarmupSourceWhenSettled(cts, task);
+    }
+
+    private static void DisposeWarmupSourceWhenSettled(CancellationTokenSource cts, Task? task)
+    {
+        if (task is null || task.IsCompleted)
+        {
+            try { cts.Dispose(); } catch { }
+            return;
+        }
+
+        _ = task.ContinueWith(
+            _ =>
+            {
+                try { cts.Dispose(); } catch { }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     public static BitmapImage? LoadPackImage(string relativePath)

@@ -14,6 +14,8 @@ namespace OddSnap.UI;
 
 public partial class SettingsWindow
 {
+    private const int TextHistoryCollapsedPreviewChars = 1200;
+    private const int TextHistoryTooltipPreviewChars = 1800;
     private static readonly System.Windows.Media.Brush HistoryCardIdleBrush = CreateFrozenHistoryBrush(System.Windows.Media.Color.FromArgb(12, 255, 255, 255));
     private static readonly System.Windows.Media.Brush HistoryCardHoverBrush = CreateFrozenHistoryBrush(System.Windows.Media.Color.FromArgb(24, 255, 255, 255));
     private static readonly System.Windows.Media.Brush HistoryCardFocusBrush = CreateFrozenHistoryBrush(System.Windows.Media.Color.FromArgb(150, 255, 255, 255));
@@ -78,6 +80,7 @@ public partial class SettingsWindow
         _ocrRenderCount = Math.Min(HistoryInitialPageSize, _filteredOcrEntries.Count);
         _ocrLastRenderedDate = null;
         AppendOcrHistoryEntries(_filteredOcrEntries, 0, _ocrRenderCount);
+        PruneOcrSearchCache(allEntries);
         UpdateHistoryActionButtons();
         sw.Stop();
         AppDiagnostics.LogInfo(
@@ -116,6 +119,7 @@ public partial class SettingsWindow
         _colorRenderCount = Math.Min(HistoryInitialPageSize, _filteredColorEntries.Count);
         _colorLastRenderedDate = null;
         AppendColorHistoryEntries(_filteredColorEntries, 0, _colorRenderCount);
+        PruneColorSearchCache(allEntries);
         UpdateHistoryActionButtons();
         sw.Stop();
         AppDiagnostics.LogInfo(
@@ -144,11 +148,12 @@ public partial class SettingsWindow
         var previousCount = _ocrRenderCount;
         _ocrRenderCount = Math.Min(_ocrRenderCount + HistoryAppendPageSize, _filteredOcrEntries.Count);
         AppendOcrHistoryEntries(_filteredOcrEntries, previousCount, _ocrRenderCount - previousCount);
-        _ = Dispatcher.BeginInvoke(() =>
+        PruneOcrSearchCache(_historyService.OcrEntries);
+        _ = TryPostToSettingsDispatcher(() =>
         {
-            if (IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 1)
+            if (!_isClosed && IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 1)
                 TextPanel.ScrollToVerticalOffset(previousOffset);
-        }, System.Windows.Threading.DispatcherPriority.Background);
+        }, System.Windows.Threading.DispatcherPriority.Background, "settings.ocr-history-scroll-post");
     }
 
     private void AppendNextColorHistoryPage()
@@ -160,11 +165,12 @@ public partial class SettingsWindow
         var previousCount = _colorRenderCount;
         _colorRenderCount = Math.Min(_colorRenderCount + HistoryAppendPageSize, _filteredColorEntries.Count);
         AppendColorHistoryEntries(_filteredColorEntries, previousCount, _colorRenderCount - previousCount);
-        _ = Dispatcher.BeginInvoke(() =>
+        PruneColorSearchCache(_historyService.ColorEntries);
+        _ = TryPostToSettingsDispatcher(() =>
         {
-            if (IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 3)
+            if (!_isClosed && IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 3)
                 ColorsPanel.ScrollToVerticalOffset(previousOffset);
-        }, System.Windows.Threading.DispatcherPriority.Background);
+        }, System.Windows.Threading.DispatcherPriority.Background, "settings.color-history-scroll-post");
     }
 
     private void FlushOcrSearchDebounce(object? sender, EventArgs e)
@@ -253,13 +259,13 @@ public partial class SettingsWindow
             card.BorderBrush = Brushes.Transparent;
         };
 
-        var capturedText = entry.Text;
-        bool isLong = capturedText.Length > 220 || capturedText.Count(ch => ch == '\n') > 3;
+        var capturedText = entry.Text ?? "";
+        bool isLong = capturedText.Length > 220 || HasMoreThanLineBreaks(capturedText, 3);
         bool expanded = false;
 
         var textBlock = new TextBlock
         {
-            Text = capturedText,
+            Text = isLong ? BuildTextHistoryPreview(capturedText, TextHistoryCollapsedPreviewChars) : capturedText,
             FontSize = 12,
             LineHeight = 18,
             TextWrapping = TextWrapping.Wrap,
@@ -268,9 +274,9 @@ public partial class SettingsWindow
             Foreground = Theme.Brush(Theme.TextPrimary),
             Opacity = 0.92
         };
-        textBlock.ToolTip = capturedText;
+        textBlock.ToolTip = BuildTextHistoryTooltip(capturedText);
         AutomationProperties.SetName(textBlock, "Recognized text");
-        AutomationProperties.SetHelpText(textBlock, capturedText);
+        AutomationProperties.SetHelpText(textBlock, BuildTextHistoryHelpText(capturedText));
 
         var footer = new Grid { Margin = new Thickness(0, 10, 0, 0) };
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -301,7 +307,9 @@ public partial class SettingsWindow
             {
                 Content = "Show more",
                 FontSize = 10,
-                Padding = new Thickness(6, 2, 6, 2),
+                MinWidth = 76,
+                MinHeight = 32,
+                Padding = new Thickness(10, 4, 10, 4),
                 Margin = new Thickness(0, 0, 6, 0),
                 VerticalAlignment = VerticalAlignment.Center,
                 Cursor = System.Windows.Input.Cursors.Hand,
@@ -313,11 +321,13 @@ public partial class SettingsWindow
                 expanded = !expanded;
                 if (expanded)
                 {
+                    textBlock.Text = capturedText;
                     textBlock.MaxHeight = double.PositiveInfinity;
                     showMoreBtn.Content = "Show less";
                 }
                 else
                 {
+                    textBlock.Text = BuildTextHistoryPreview(capturedText, TextHistoryCollapsedPreviewChars);
                     textBlock.MaxHeight = 74;
                     showMoreBtn.Content = "Show more";
                 }
@@ -331,7 +341,9 @@ public partial class SettingsWindow
         {
             Content = "Copy all",
             FontSize = 10,
-            Padding = new Thickness(6, 2, 6, 2),
+            MinWidth = 72,
+            MinHeight = 32,
+            Padding = new Thickness(10, 4, 10, 4),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = System.Windows.Input.Cursors.Hand,
             ToolTip = "Copy all text"
@@ -379,10 +391,16 @@ public partial class SettingsWindow
 
         card.MouseLeftButtonDown += (_, e) =>
         {
-            if (!_selectMode)
+            if (IsHistoryActionButtonClick(e.OriginalSource))
                 return;
 
             e.Handled = true;
+            if (!_selectMode)
+            {
+                CopyTextHistoryItem();
+                return;
+            }
+
             ToggleSelection();
         };
 
@@ -545,7 +563,9 @@ public partial class SettingsWindow
         {
             Content = "Copy",
             FontSize = 10,
-            Padding = new Thickness(8, 3, 8, 3),
+            MinWidth = 58,
+            MinHeight = 32,
+            Padding = new Thickness(10, 4, 10, 4),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor = System.Windows.Input.Cursors.Hand,
             ToolTip = "Copy this color value"
@@ -589,6 +609,9 @@ public partial class SettingsWindow
 
         card.MouseLeftButtonDown += (_, e) =>
         {
+            if (IsHistoryActionButtonClick(e.OriginalSource))
+                return;
+
             e.Handled = true;
             if (_selectMode)
             {
@@ -681,28 +704,16 @@ public partial class SettingsWindow
 
     private void PruneOcrSearchCache(IReadOnlyCollection<OcrHistoryEntry> currentEntries)
     {
-        if (_ocrSearchTextCache.Count <= currentEntries.Count + 64 &&
-            _ocrHistoryCardCache.Count <= currentEntries.Count + 64)
-            return;
-
-        var current = currentEntries.ToHashSet();
-        foreach (var entry in _ocrSearchTextCache.Keys.Where(entry => !current.Contains(entry)).ToList())
-            _ocrSearchTextCache.Remove(entry);
-        foreach (var entry in _ocrHistoryCardCache.Keys.Where(entry => !current.Contains(entry)).ToList())
-            _ocrHistoryCardCache.Remove(entry);
+        var entries = currentEntries as IReadOnlyList<OcrHistoryEntry> ?? currentEntries.ToList();
+        PruneHistoryCache(_ocrSearchTextCache, entries, TextHistorySearchCacheLimit);
+        PruneHistoryCache(_ocrHistoryCardCache, entries, TextHistoryCardCacheLimit);
     }
 
     private void PruneColorSearchCache(IReadOnlyCollection<ColorHistoryEntry> currentEntries)
     {
-        if (_colorSearchTextCache.Count <= currentEntries.Count + 64 &&
-            _colorHistoryCardCache.Count <= currentEntries.Count + 64)
-            return;
-
-        var current = currentEntries.ToHashSet();
-        foreach (var entry in _colorSearchTextCache.Keys.Where(entry => !current.Contains(entry)).ToList())
-            _colorSearchTextCache.Remove(entry);
-        foreach (var entry in _colorHistoryCardCache.Keys.Where(entry => !current.Contains(entry)).ToList())
-            _colorHistoryCardCache.Remove(entry);
+        var entries = currentEntries as IReadOnlyList<ColorHistoryEntry> ?? currentEntries.ToList();
+        PruneHistoryCache(_colorSearchTextCache, entries, TextHistorySearchCacheLimit);
+        PruneHistoryCache(_colorHistoryCardCache, entries, TextHistoryCardCacheLimit);
     }
 
     private static string BuildColorSearchText(ColorHistoryEntry entry)
@@ -733,6 +744,41 @@ public partial class SettingsWindow
     private static bool IsHistoryCardActivationKey(KeyEventArgs e)
         => e.Key is Key.Enter or Key.Space;
 
+    private static bool IsHistoryActionButtonClick(object originalSource)
+    {
+        if (originalSource is not DependencyObject source)
+            return false;
+
+        DependencyObject? current = source;
+        while (current is not null)
+        {
+            if (current is Button)
+                return true;
+
+            current = GetHistoryClickParent(current);
+        }
+
+        return false;
+    }
+
+    private static DependencyObject? GetHistoryClickParent(DependencyObject source)
+    {
+        if (source is FrameworkElement { Parent: DependencyObject frameworkParent })
+            return frameworkParent;
+
+        if (source is FrameworkContentElement { Parent: DependencyObject contentParent })
+            return contentParent;
+
+        try
+        {
+            return VisualTreeHelper.GetParent(source);
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
     private static void UpdateShowMoreTextButtonLabel(Button button, bool expanded)
     {
         var name = expanded ? "Show less text" : "Show more text";
@@ -742,6 +788,52 @@ public partial class SettingsWindow
         button.ToolTip = helpText;
         AutomationProperties.SetName(button, name);
         AutomationProperties.SetHelpText(button, helpText);
+    }
+
+    private static bool HasMoreThanLineBreaks(string text, int maxLineBreaks)
+    {
+        var count = 0;
+        foreach (var ch in text)
+        {
+            if (ch != '\n')
+                continue;
+
+            count++;
+            if (count > maxLineBreaks)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static string BuildTextHistoryPreview(string text, int maxChars)
+    {
+        if (string.IsNullOrEmpty(text) || text.Length <= maxChars)
+            return text;
+
+        return text[..Math.Max(0, maxChars)].TrimEnd() + "...";
+    }
+
+    private static string BuildTextHistoryTooltip(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return "Empty text capture";
+
+        if (text.Length <= TextHistoryTooltipPreviewChars)
+            return text;
+
+        return $"{BuildTextHistoryPreview(text, TextHistoryTooltipPreviewChars)}\n\nFull text is {text.Length:N0} characters. Use Copy all to copy it.";
+    }
+
+    private static string BuildTextHistoryHelpText(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return "Empty recognized text.";
+
+        if (text.Length <= TextHistoryTooltipPreviewChars)
+            return text;
+
+        return $"Long recognized text, {text.Length:N0} characters. Use Show more to expand it or Copy all to copy the full text.";
     }
 
     private static string FormatColorHexForDisplay(string hex)

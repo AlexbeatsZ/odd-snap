@@ -1450,27 +1450,27 @@
                                     <TextBlock Text="&#xE9D2;" Style="{StaticResource SettingIconGlyph}"/>
                                 </Border>
                                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                    <TextBlock Text="Quality" Style="{StaticResource SettingTitle}"/>
-                                    <TextBlock Text="Set maximum recording resolution." Style="{StaticResource SettingDescription}"/>
+                                    <TextBlock Text="Resolution" Style="{StaticResource SettingTitle}"/>
+                                    <TextBlock Text="Limit recording size. Original keeps the selected area's pixels." Style="{StaticResource SettingDescription}"/>
                                 </StackPanel>
                                 <ComboBox x:Name="RecordingQualityCombo" Grid.Column="2" MinWidth="150"
                                           VerticalAlignment="Center"
-                                          ToolTip="Set maximum recording resolution"
-                                          AutomationProperties.Name="Recording quality"
+                                          ToolTip="Limit recording size. Original keeps the sharpest output."
+                                          AutomationProperties.Name="Recording resolution"
                                           SelectionChanged="RecordingQualityCombo_Changed">
-                                    <ComboBoxItem Content="Original"
-                                                  ToolTip="Keep the original recording resolution"
+                                    <ComboBoxItem Content="Original (sharpest)"
+                                                  ToolTip="Keep the selected area's original pixel size"
                                                   AutomationProperties.Name="Original recording resolution"
-                                                  AutomationProperties.HelpText="Record at the selected area's original resolution."/>
-                                    <ComboBoxItem Content="1080p"
+                                                  AutomationProperties.HelpText="Record at the selected area's original pixel size for the sharpest output."/>
+                                    <ComboBoxItem Content="1080p max"
                                                   ToolTip="Limit recordings to 1080p"
                                                   AutomationProperties.Name="1080p recording resolution"
                                                   AutomationProperties.HelpText="Scale recordings down to 1080p when needed."/>
-                                    <ComboBoxItem Content="720p"
+                                    <ComboBoxItem Content="720p max"
                                                   ToolTip="Limit recordings to 720p"
                                                   AutomationProperties.Name="720p recording resolution"
                                                   AutomationProperties.HelpText="Scale recordings down to 720p when needed."/>
-                                    <ComboBoxItem Content="480p"
+                                    <ComboBoxItem Content="480p max"
                                                   ToolTip="Limit recordings to 480p"
                                                   AutomationProperties.Name="480p recording resolution"
                                                   AutomationProperties.HelpText="Scale recordings down to 480p when needed."/>
@@ -1504,13 +1504,13 @@
                                                   AutomationProperties.Name="24 FPS"
                                                   AutomationProperties.HelpText="Capture video-like motion at 24 frames per second."/>
                                     <ComboBoxItem Content="30" Tag="30"
-                                                  ToolTip="Capture 30 frames per second"
+                                                  ToolTip="Capture 30 frames per second for slower screens or lower CPU use"
                                                   AutomationProperties.Name="30 FPS"
-                                                  AutomationProperties.HelpText="Capture smooth recordings at 30 frames per second."/>
+                                                  AutomationProperties.HelpText="Capture at 30 frames per second for slower screens or lower CPU use."/>
                                     <ComboBoxItem Content="60" Tag="60"
-                                                  ToolTip="Capture 60 frames per second"
+                                                  ToolTip="Capture 60 frames per second by default for smooth video"
                                                   AutomationProperties.Name="60 FPS"
-                                                  AutomationProperties.HelpText="Capture very smooth recordings at 60 frames per second."/>
+                                                  AutomationProperties.HelpText="Capture smooth video at 60 frames per second."/>
                                 </ComboBox>
                             </Grid>
                             <Border Height="1" Background="{DynamicResource ThemeSeparatorBrush}" Margin="0,9,0,9"/>

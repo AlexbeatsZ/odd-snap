@@ -25,6 +25,8 @@ public partial class App
         UploadDestination.Imgur,
         UploadDestination.Catbox
     };
+    private const int GoogleLensTotalUploadTimeoutSeconds = 60;
+    private const int GoogleLensPerHostUploadTimeoutSeconds = 18;
 
     private static string CleanErrorMessage(string? msg)
     {
@@ -134,7 +136,8 @@ public partial class App
                             transparentShell: false,
                             showOverlayButtons: true,
                             clickActionUrl: startUrl,
-                            clickActionLabel: providerName) with { SuppressSound = true });
+                            clickActionLabel: providerName) with
+                        { SuppressSound = true });
                         previewBitmap = null;
                     }
                     else
@@ -336,7 +339,8 @@ public partial class App
                         transparentShell: false,
                         showOverlayButtons: true,
                         clickActionUrl: startUrl,
-                        clickActionLabel: providerName) with { SuppressSound = true });
+                        clickActionLabel: providerName) with
+                    { SuppressSound = true });
                     previewBitmap = null;
                 }
                 else
@@ -485,8 +489,15 @@ public partial class App
         }
 
         var errors = new List<string>();
+        using var totalTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(GoogleLensTotalUploadTimeoutSeconds));
         foreach (var candidate in candidates)
         {
+            if (totalTimeout.IsCancellationRequested)
+            {
+                errors.Add(BuildGoogleLensTotalTimeoutMessage());
+                break;
+            }
+
             var configurationError = UploadService.GetConfigurationError(candidate, settings);
             if (!string.IsNullOrWhiteSpace(configurationError))
             {
@@ -494,7 +505,10 @@ public partial class App
                 continue;
             }
 
-            var result = await UploadService.UploadAsync(filePath, candidate, settings);
+            using var hostTimeout = CancellationTokenSource.CreateLinkedTokenSource(totalTimeout.Token);
+            hostTimeout.CancelAfter(TimeSpan.FromSeconds(GoogleLensPerHostUploadTimeoutSeconds));
+
+            var result = await UploadService.UploadAsync(filePath, candidate, settings, hostTimeout.Token);
             if (result.Success && !string.IsNullOrWhiteSpace(result.Url))
             {
                 return new GoogleLensUploadAttempt
@@ -506,6 +520,17 @@ public partial class App
                 };
             }
 
+            if (hostTimeout.IsCancellationRequested)
+            {
+                errors.Add(totalTimeout.IsCancellationRequested
+                    ? BuildGoogleLensTotalTimeoutMessage()
+                    : $"{UploadService.GetName(candidate)}: timed out after {GoogleLensPerHostUploadTimeoutSeconds} seconds.");
+
+                if (totalTimeout.IsCancellationRequested)
+                    break;
+                continue;
+            }
+
             errors.Add($"{UploadService.GetName(candidate)}: {CleanErrorMessage(result.Error)}");
         }
 
@@ -515,6 +540,9 @@ public partial class App
             Destination = primary
         };
     }
+
+    private static string BuildGoogleLensTotalTimeoutMessage()
+        => $"Google Lens upload timed out after {GoogleLensTotalUploadTimeoutSeconds} seconds. Check your connection or choose another Lens upload destination in Settings -> Uploads.";
 
     private sealed class GoogleLensUploadAttempt
     {

@@ -201,7 +201,7 @@ public partial class SettingsWindow
         var selected = (RecordingQuality)Math.Clamp(RecordingQualityCombo.SelectedIndex, 0, 3);
         UpdateRecordingPreference(
             "settings.recording-quality",
-            "Recording quality",
+            "Recording resolution",
             previous,
             selected,
             value => _settingsService.Settings.RecordingQuality = value,

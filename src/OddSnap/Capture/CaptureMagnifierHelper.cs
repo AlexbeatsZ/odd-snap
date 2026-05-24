@@ -23,6 +23,7 @@ internal sealed class CaptureMagnifierHelper : IDisposable
     private Bitmap? _screenshot;
     private int _bmpW, _bmpH;
     private Color _pickedColor;
+    private int _lastPickedArgb = ScreenshotPixelSampler.OpaqueBlack;
     private string _hexStr = "";
     private string _rgbStr = "";
     private int _placementIndex;
@@ -36,6 +37,8 @@ internal sealed class CaptureMagnifierHelper : IDisposable
         _screenshot = screenshot;
         _bmpW = screenshot.Width;
         _bmpH = screenshot.Height;
+        _lastSamplePoint = new Point(-1, -1);
+        _lastPickedArgb = ScreenshotPixelSampler.OpaqueBlack;
     }
 
     /// <summary>
@@ -50,16 +53,21 @@ internal sealed class CaptureMagnifierHelper : IDisposable
         int cy = Math.Clamp(cursorInForm.Y, 0, _bmpH - 1);
         var samplePoint = new Point(cx, cy);
 
-        int argb = ScreenshotPixelSampler.ReadArgb(_screenshot, cx, cy);
-        _pickedColor = Color.FromArgb(argb);
-        _hexStr = $"{_pickedColor.R:X2}{_pickedColor.G:X2}{_pickedColor.B:X2}";
-        _rgbStr = $"{_pickedColor.R}, {_pickedColor.G}, {_pickedColor.B}";
-
+        int argb;
         if (samplePoint != _lastSamplePoint)
         {
             _lastSamplePoint = samplePoint;
-            BuildMagnifierBitmap(cx, cy);
+            argb = BuildMagnifierBitmap(cx, cy);
+            _lastPickedArgb = argb;
         }
+        else
+        {
+            argb = _lastPickedArgb;
+        }
+
+        _pickedColor = Color.FromArgb(argb);
+        _hexStr = $"{_pickedColor.R:X2}{_pickedColor.G:X2}{_pickedColor.B:X2}";
+        _rgbStr = $"{_pickedColor.R}, {_pickedColor.G}, {_pickedColor.B}";
 
         EnsureForm(owner);
         var form = _form!;
@@ -89,6 +97,7 @@ internal sealed class CaptureMagnifierHelper : IDisposable
         _bmpW = 0;
         _bmpH = 0;
         _lastSamplePoint = new Point(-1, -1);
+        _lastPickedArgb = ScreenshotPixelSampler.OpaqueBlack;
         _placementIndex = 0;
     }
 
@@ -102,10 +111,10 @@ internal sealed class CaptureMagnifierHelper : IDisposable
         WindowDetector.RegisterIgnoredWindow(_form.Handle);
     }
 
-    private void BuildMagnifierBitmap(int cx, int cy)
+    private int BuildMagnifierBitmap(int cx, int cy)
     {
         if (_screenshot is null)
-            return;
+            return ScreenshotPixelSampler.OpaqueBlack;
 
         int half = Grid / 2;
         var requestedSample = new Rectangle(cx - half, cy - half, Grid, Grid);
@@ -122,6 +131,7 @@ internal sealed class CaptureMagnifierHelper : IDisposable
             return samplePixels[((sy - copiedSample.Y) * copiedSample.Width) + (sx - copiedSample.X)];
         }
 
+        var centerArgb = SampleAt(cx, cy);
         Array.Fill(_magPixels, unchecked((int)0xFF202020));
 
         for (int gy = 0; gy < Grid; gy++)
@@ -167,6 +177,8 @@ internal sealed class CaptureMagnifierHelper : IDisposable
         {
             _magBitmap.UnlockBits(bitsLock);
         }
+
+        return centerArgb;
     }
 
     private void SetPx(int x, int y, int v)

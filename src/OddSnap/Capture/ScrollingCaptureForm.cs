@@ -261,25 +261,34 @@ public sealed partial class ScrollingCaptureForm : Form
 
     private FrameCaptureResult CaptureFrame(bool forceAccept)
     {
+        Bitmap? frame = null;
         try
         {
             _captureCts.Token.ThrowIfCancellationRequested();
-            var frame = ScreenCapture.CaptureRegion(_screenRegion, _showCursor);
+            frame = ScreenCapture.CaptureRegion(_screenRegion, _showCursor);
 
+            FrameCaptureResult result;
             if (forceAccept || _captureMode == ScrollingCaptureMode.Manual)
             {
                 ClearPendingAutoFrame();
-                return TryAcceptFrame(frame, forceAccept);
+                result = TryAcceptFrame(frame, forceAccept);
+            }
+            else
+            {
+                result = ProcessAutomaticFrame(frame);
             }
 
-            return ProcessAutomaticFrame(frame);
+            frame = null;
+            return result;
         }
         catch (OperationCanceledException) when (_captureCts.IsCancellationRequested)
         {
+            frame?.Dispose();
             return FrameCaptureResult.Rejected;
         }
         catch (Exception ex)
         {
+            frame?.Dispose();
             // Capture can fail transiently; skip this tick.
             // If we never captured a frame at all, surface a failure instead of a silent cancel.
             if (_frameCount == 0 && _state == State.Capturing)
@@ -403,15 +412,22 @@ public sealed partial class ScrollingCaptureForm : Form
 
     private void StopCapturing()
     {
-        StopAutomaticTimer();
-        TryAcceptPendingAutoFrame();
-        ClearPendingAutoFrame();
-        Services.SoundService.PlayRecordStopSound();
+        try
+        {
+            StopAutomaticTimer();
+            TryAcceptPendingAutoFrame();
+            ClearPendingAutoFrame();
+            Services.SoundService.PlayRecordStopSound();
 
-        _state = State.Stitching;
-        _controlBar?.SetStatus("Stitching...");
+            _state = State.Stitching;
+            _controlBar?.SetStatus("Stitching...");
 
-        FinishCapture();
+            FinishCapture();
+        }
+        catch (Exception ex)
+        {
+            Fail(string.IsNullOrWhiteSpace(ex.Message) ? "Scrolling capture failed while stitching." : ex.Message);
+        }
     }
 
     private void FinishCapture()
@@ -652,6 +668,8 @@ public sealed partial class ScrollingCaptureForm : Form
     {
         if (disposing)
         {
+            if (IsHandleCreated)
+                CaptureWindowExclusion.Unregister(Handle);
             _captureCts.Cancel();
             _magHelper?.Dispose();
             _escapeHook?.Dispose();
@@ -748,7 +766,15 @@ public sealed partial class ScrollingCaptureForm : Form
 
         public void SetFrameCount(int count)
         {
-            if (InvokeRequired) { BeginInvoke(() => SetFrameCount(count)); return; }
+            if (!CanUpdateControlBar())
+                return;
+
+            if (InvokeRequired)
+            {
+                TryPostControlBarUpdate(() => SetFrameCount(count));
+                return;
+            }
+
             _frameCount = count;
             _status = FormatFrameStatus(count);
             Invalidate(_statusRect);
@@ -756,9 +782,43 @@ public sealed partial class ScrollingCaptureForm : Form
 
         public void SetStatus(string text)
         {
-            if (InvokeRequired) { BeginInvoke(() => SetStatus(text)); return; }
+            if (!CanUpdateControlBar())
+                return;
+
+            if (InvokeRequired)
+            {
+                TryPostControlBarUpdate(() => SetStatus(text));
+                return;
+            }
+
             _status = text;
             Invalidate(_statusRect);
+        }
+
+        private bool CanUpdateControlBar() =>
+            IsHandleCreated &&
+            !IsDisposed &&
+            !Disposing;
+
+        private void TryPostControlBarUpdate(Action action)
+        {
+            if (!CanUpdateControlBar())
+                return;
+
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    if (CanUpdateControlBar())
+                        action();
+                }));
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (InvalidOperationException)
+            {
+            }
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -878,7 +938,13 @@ public sealed partial class ScrollingCaptureForm : Form
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing) { _statusFont.Dispose(); _btnFont.Dispose(); }
+            if (disposing)
+            {
+                if (IsHandleCreated)
+                    CaptureWindowExclusion.Unregister(Handle);
+                _statusFont.Dispose();
+                _btnFont.Dispose();
+            }
             base.Dispose(disposing);
         }
 

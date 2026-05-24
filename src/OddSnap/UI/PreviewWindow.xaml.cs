@@ -21,14 +21,20 @@ public partial class PreviewWindow : Window
 {
     private const double PreviewCornerRadius = 12;
     private const int PreviewTargetOpenCooldownMs = 900;
+    private const int PreviewThumbnailMaxLongEdge = 640;
+    private const long MaxInlineDragPngPixels = 4_000_000;
+    private const long MaxAutomaticDragWarmupPixels = MaxInlineDragPngPixels;
     private readonly Bitmap? _screenshot;
     private DispatcherTimer _fadeTimer = null!;
     private DispatcherTimer? _previewTargetOpenCooldownTimer;
+    private Task<string>? _dragTempFileTask;
+    private string? _dragTempFilePath;
     private bool _isFading;
     private bool _isSavingPreview;
     private bool _isOpeningPreviewTarget;
     private bool _isHovered;
     private bool _isPinned;
+    private bool _isClosed;
     private System.Windows.Point _mouseDownPos;
     private bool _mouseIsDown;
     private string? _savedFilePath;
@@ -51,7 +57,7 @@ public partial class PreviewWindow : Window
         if (current.Dispatcher.CheckAccess())
             current.ForceCloseIfStillCurrent();
         else
-            current.Dispatcher.BeginInvoke(current.ForceCloseIfStillCurrent);
+            current.TryPostToPreviewDispatcher(current.ForceCloseIfStillCurrent);
     }
 
     public static void AttachUploadedLink(string localPath, string url, string provider)
@@ -62,7 +68,7 @@ public partial class PreviewWindow : Window
         if (current.Dispatcher.CheckAccess())
             current.AttachUploadedLinkOnOwnerDispatcher(localPath, url, provider);
         else
-            current.Dispatcher.BeginInvoke(() => current.AttachUploadedLinkOnOwnerDispatcher(localPath, url, provider));
+            current.TryPostToPreviewDispatcher(() => current.AttachUploadedLinkOnOwnerDispatcher(localPath, url, provider));
     }
 
     public static void SetPosition(OddSnap.Models.ToastPosition position) => _position = position;
@@ -83,6 +89,7 @@ public partial class PreviewWindow : Window
         SizeChanged += (_, _) => UpdatePreviewClip();
         InitCommon();
         _current = this;
+        QueuePreviewDragTempWarmup();
     }
 
     /// <summary>Constructor for GIF files — shows first frame as thumbnail, supports drag-drop of the file.</summary>
@@ -115,15 +122,14 @@ public partial class PreviewWindow : Window
         if (current.Dispatcher.CheckAccess())
             current.ForceClose();
         else
-            current.Dispatcher.BeginInvoke(current.ForceClose);
+            current.TryPostToPreviewDispatcher(current.ForceClose);
     }
 
     private static bool TryCopyGifFileToClipboard(string gifFilePath)
     {
         try
         {
-            var files = new System.Collections.Specialized.StringCollection { gifFilePath };
-            System.Windows.Clipboard.SetFileDropList(files);
+            ClipboardService.CopyFilesToClipboard(gifFilePath);
             return true;
         }
         catch (Exception ex)
@@ -171,6 +177,7 @@ public partial class PreviewWindow : Window
 
     private void AttachUploadedLinkOnOwnerDispatcher(string localPath, string url, string provider)
     {
+        if (_isClosed) return;
         if (_current != this) return;
         if (_savedFilePath is null) return;
         if (!string.Equals(_savedFilePath, localPath, StringComparison.OrdinalIgnoreCase)) return;
@@ -180,9 +187,27 @@ public partial class PreviewWindow : Window
 
     private void ForceCloseIfStillCurrent()
     {
+        if (_isClosed) return;
         if (_current != this) return;
 
         ForceClose();
+    }
+
+    private bool TryPostToPreviewDispatcher(Action action, DispatcherPriority priority = DispatcherPriority.Normal)
+    {
+        if (_isClosed || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            return false;
+
+        try
+        {
+            Dispatcher.BeginInvoke(action, priority);
+            return true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            AppDiagnostics.LogWarning("preview.dispatcher-post", ex.Message, ex);
+            return false;
+        }
     }
 
     private void ApplyTheme()
@@ -299,8 +324,8 @@ public partial class PreviewWindow : Window
 
         double scale = Math.Min(maxW / imgW, maxH / imgH);
         scale = Math.Min(scale, 1.0);
-        double fitW = Math.Max(100, imgW * scale);
-        double fitH = Math.Max(60, imgH * scale);
+        double fitW = Math.Max(140, imgW * scale);
+        double fitH = Math.Max(96, imgH * scale);
 
         PreviewFrame.Width = fitW;
         PreviewFrame.Height = fitH;
@@ -319,7 +344,8 @@ public partial class PreviewWindow : Window
 
     private void SetThumbnail()
     {
-        ThumbnailImage.Source = BitmapToSource(_screenshot!);
+        using var thumbnail = CaptureOutputService.PrepareBitmap(_screenshot!, PreviewThumbnailMaxLongEdge);
+        ThumbnailImage.Source = BitmapToSource(thumbnail);
     }
 
     private void SetGifThumbnail(string gifPath)
@@ -330,6 +356,7 @@ public partial class PreviewWindow : Window
             bitmapImage.BeginInit();
             bitmapImage.UriSource = new Uri(gifPath, UriKind.Absolute);
             bitmapImage.CacheOption = BitmapCacheOption.OnLoad;
+            ApplyPreviewDecodeSize(bitmapImage, gifPath);
             bitmapImage.EndInit();
             bitmapImage.Freeze();
             ThumbnailImage.Source = bitmapImage;
@@ -337,6 +364,26 @@ public partial class PreviewWindow : Window
         catch (Exception ex)
         {
             AppDiagnostics.LogWarning("preview.gif-thumbnail", $"Failed to load GIF preview thumbnail {Path.GetFileName(gifPath)}: {ex.Message}", ex);
+        }
+    }
+
+    private static void ApplyPreviewDecodeSize(BitmapImage bitmapImage, string imagePath)
+    {
+        try
+        {
+            using var image = System.Drawing.Image.FromFile(imagePath);
+            int longest = Math.Max(image.Width, image.Height);
+            if (longest <= PreviewThumbnailMaxLongEdge)
+                return;
+
+            if (image.Width >= image.Height)
+                bitmapImage.DecodePixelWidth = PreviewThumbnailMaxLongEdge;
+            else
+                bitmapImage.DecodePixelHeight = PreviewThumbnailMaxLongEdge;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogWarning("preview.decode-size", $"Failed to read preview image dimensions for {Path.GetFileName(imagePath)}: {ex.Message}", ex);
         }
     }
 
@@ -354,8 +401,11 @@ public partial class PreviewWindow : Window
         Left = startLeft;
         Top = startTop;
 
-        Dispatcher.BeginInvoke(() =>
+        _ = TryPostToPreviewDispatcher(() =>
         {
+            if (_isClosed)
+                return;
+
             UpdatePreviewClip();
             Opacity = 1;
             if (animateLeft)

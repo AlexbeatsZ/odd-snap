@@ -137,9 +137,20 @@ public static class OfficeExportService
 
     public static void OpenFileWithApp(string imagePath, string appPath)
     {
+        if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
+            throw new FileNotFoundException("The file to open is no longer on disk.", imagePath);
+
+        var normalizedAppPath = NormalizeAppPath(appPath);
+        if (string.IsNullOrWhiteSpace(normalizedAppPath) || !File.Exists(normalizedAppPath))
+        {
+            throw new FileNotFoundException(
+                "The configured app is no longer on disk. Choose another app from Open with.",
+                normalizedAppPath);
+        }
+
         System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
         {
-            FileName = NormalizeAppPath(appPath),
+            FileName = normalizedAppPath,
             Arguments = QuoteArgument(imagePath),
             UseShellExecute = true
         });
@@ -252,6 +263,14 @@ public static class OfficeExportService
                 TryDeleteTemporaryOfficeFile(tempPath, "Office export");
             }
         }
+    }
+
+    public static void SendFile(string imagePath, OfficeExportTarget target)
+    {
+        if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
+            throw new FileNotFoundException("The image file is no longer on disk.", imagePath);
+
+        SendImageFile(imagePath, target);
     }
 
     public static void OpenWithBitmap(Bitmap bitmap, string? existingImagePath)

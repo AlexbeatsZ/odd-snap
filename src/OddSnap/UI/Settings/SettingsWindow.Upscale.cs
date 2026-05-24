@@ -325,7 +325,7 @@ public partial class SettingsWindow
 
     private void UpscaleOpenLocalEngineRepoBtn_Click(object sender, RoutedEventArgs e)
     {
-        if (_upscaleProjectOpenInProgress)
+        if (_isClosed || _upscaleProjectOpenInProgress)
             return;
 
         _upscaleProjectOpenInProgress = true;
@@ -388,19 +388,16 @@ public partial class SettingsWindow
 
     private void ResetUpscaleProjectOpenGuardAfterCooldown()
     {
-        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(LocalEngineProjectOpenCooldownMs) };
-        timer.Tick += (_, _) =>
+        RunAfterSettingsCooldown(LocalEngineProjectOpenCooldownMs, () =>
         {
-            timer.Stop();
             _upscaleProjectOpenInProgress = false;
             UpdateUpscaleLocalEngineUi();
-        };
-        timer.Start();
+        });
     }
 
     private void UpscaleRemoveAllModelsBtn_Click(object sender, RoutedEventArgs e)
     {
-        if (_upscaleModelRemovalInProgress)
+        if (_isClosed || _upscaleModelRemovalInProgress)
             return;
 
         if (!ThemedConfirmDialog.Confirm(
@@ -427,7 +424,7 @@ public partial class SettingsWindow
 
     private void RunUpscaleModelRemoval(Action removeAction)
     {
-        if (_upscaleModelRemovalInProgress)
+        if (_isClosed || _upscaleModelRemovalInProgress)
             return;
 
         _upscaleModelRemovalInProgress = true;
@@ -452,6 +449,9 @@ public partial class SettingsWindow
 
     private void SetUpscaleRemovalStatus(string message)
     {
+        if (_isClosed)
+            return;
+
         UpscaleLocalEngineProgress.Visibility = Visibility.Collapsed;
         UpscaleLocalEngineProgress.IsIndeterminate = false;
         UpscaleLocalEngineProgress.Value = 0;
@@ -473,14 +473,11 @@ public partial class SettingsWindow
 
     private void ResetUpscaleModelRemovalGuardAfterCooldown()
     {
-        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(LocalEngineProjectOpenCooldownMs) };
-        timer.Tick += (_, _) =>
+        RunAfterSettingsCooldown(LocalEngineProjectOpenCooldownMs, () =>
         {
-            timer.Stop();
             _upscaleModelRemovalInProgress = false;
             UpdateUpscaleLocalEngineUi();
-        };
-        timer.Start();
+        });
     }
 
     private void UpscaleCopyErrorBtn_Click(object sender, RoutedEventArgs e)

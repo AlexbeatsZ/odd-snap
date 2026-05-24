@@ -145,6 +145,8 @@ public sealed class ToolbarForm : Form
     {
         if (disposing)
         {
+            if (IsHandleCreated)
+                CaptureWindowExclusion.Unregister(Handle);
             _surfaceGraphics?.Dispose();
             _surface?.Dispose();
         }

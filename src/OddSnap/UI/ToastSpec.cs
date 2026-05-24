@@ -1,5 +1,6 @@
 using Bitmap = System.Drawing.Bitmap;
 using Color = System.Windows.Media.Color;
+using System.Text;
 using System.Windows.Media;
 using System.Windows;
 
@@ -7,6 +8,9 @@ namespace OddSnap.UI;
 
 internal sealed record ToastSpec
 {
+    private const int MaxToastTitleChars = 140;
+    private const int MaxToastBodyChars = 900;
+
     public string Title { get; init; } = "";
     public string Body { get; init; } = "";
     public Color? SwatchColor { get; init; }
@@ -30,15 +34,15 @@ internal sealed record ToastSpec
 
     public static ToastSpec Standard(string title, string body = "", string? filePath = null) => new()
     {
-        Title = title,
-        Body = body,
+        Title = TrimToastText(title, MaxToastTitleChars, appendNotice: false),
+        Body = TrimToastText(body, MaxToastBodyChars, appendNotice: true),
         FilePath = filePath
     };
 
     public static ToastSpec Error(string title, string body = "", string? filePath = null) => new()
     {
-        Title = title,
-        Body = body,
+        Title = TrimToastText(title, MaxToastTitleChars, appendNotice: false),
+        Body = TrimToastText(body, MaxToastBodyChars, appendNotice: true),
         FilePath = filePath,
         PlayErrorSound = true,
         IsError = true
@@ -46,15 +50,15 @@ internal sealed record ToastSpec
 
     public static ToastSpec WithColor(string title, string body, Color color) => new()
     {
-        Title = title,
-        Body = body,
+        Title = TrimToastText(title, MaxToastTitleChars, appendNotice: false),
+        Body = TrimToastText(body, MaxToastBodyChars, appendNotice: true),
         SwatchColor = color
     };
 
     public static ToastSpec InlinePreview(Bitmap preview, string title, string body, string? filePath = null) => new()
     {
-        Title = title,
-        Body = body,
+        Title = TrimToastText(title, MaxToastTitleChars, appendNotice: false),
+        Body = TrimToastText(body, MaxToastBodyChars, appendNotice: true),
         InlinePreviewBitmap = preview,
         FilePath = filePath
     };
@@ -69,17 +73,17 @@ internal sealed record ToastSpec
         bool showOverlayButtons,
         string? clickActionUrl = null,
         string? clickActionLabel = null) => new()
-    {
-        Title = title,
-        Body = body,
-        PreviewBitmap = preview,
-        FilePath = filePath,
-        ClickActionUrl = clickActionUrl,
-        ClickActionLabel = clickActionLabel,
-        AutoPin = autoPin,
-        TransparentShell = transparentShell,
-        ShowOverlayButtons = showOverlayButtons
-    };
+        {
+            Title = TrimToastText(title, MaxToastTitleChars, appendNotice: false),
+            Body = TrimToastText(body, MaxToastBodyChars, appendNotice: true),
+            PreviewBitmap = preview,
+            FilePath = filePath,
+            ClickActionUrl = clickActionUrl,
+            ClickActionLabel = clickActionLabel,
+            AutoPin = autoPin,
+            TransparentShell = transparentShell,
+            ShowOverlayButtons = showOverlayButtons
+        };
 
     public static ToastSpec Sticker(Bitmap sticker) => new()
     {
@@ -89,4 +93,56 @@ internal sealed record ToastSpec
         PreviewMargin = new Thickness(0),
         ShowOverlayButtons = false
     };
+
+    public static string CompactTextPreview(string? text, int maxChars = 80)
+    {
+        if (string.IsNullOrWhiteSpace(text) || maxChars <= 0)
+            return "";
+
+        var builder = new StringBuilder(Math.Min(maxChars, text.Length));
+        bool pendingSpace = false;
+        bool wroteText = false;
+
+        foreach (var ch in text)
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                if (wroteText)
+                    pendingSpace = true;
+                continue;
+            }
+
+            if (pendingSpace)
+            {
+                if (builder.Length >= maxChars)
+                    return builder.ToString().TrimEnd() + "...";
+
+                builder.Append(' ');
+                pendingSpace = false;
+            }
+
+            if (builder.Length >= maxChars)
+                return builder.ToString().TrimEnd() + "...";
+
+            builder.Append(ch);
+            wroteText = true;
+        }
+
+        return builder.ToString();
+    }
+
+    private static string TrimToastText(string? text, int maxChars, bool appendNotice)
+    {
+        if (string.IsNullOrEmpty(text))
+            return "";
+
+        var normalized = text.Replace("\r\n", "\n").Replace('\r', '\n').Trim();
+        if (normalized.Length <= maxChars)
+            return normalized;
+
+        var trimmed = normalized[..maxChars].TrimEnd();
+        return appendNotice
+            ? trimmed + "\n... Details shortened."
+            : trimmed + "...";
+    }
 }

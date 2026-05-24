@@ -236,7 +236,7 @@ public sealed class AppSettings
     // Video recording
     public RecordingFormat RecordingFormat { get; set; } = RecordingFormat.MP4;
     public RecordingQuality RecordingQuality { get; set; } = RecordingQuality.Original;
-    public int RecordingFps { get; set; } = 30;
+    public int RecordingFps { get; set; } = 60;
     public bool RecordMicrophone { get; set; }
     public bool RecordDesktopAudio { get; set; } = true;
     public string? MicrophoneDeviceId { get; set; }
@@ -290,7 +290,7 @@ public sealed class AppSettings
     private (uint mod, uint key) GetGenericToolHotkey(string toolId)
     {
         // Check user-customized value first (including explicit clears stored as [0,0])
-        if (ToolHotkeys != null && ToolHotkeys.TryGetValue(toolId, out var v) && v.Length >= 2)
+        if (ToolHotkeys != null && ToolHotkeys.TryGetValue(toolId, out var v) && v is { Length: >= 2 })
             return (v[0], v[1]);
         if (ToolDef.AllTools.Any(t => t.Id == toolId && t.Group == 1) &&
             EnabledTools is { Count: > 0 } &&
@@ -321,7 +321,7 @@ public sealed class AppSettings
             case "_scrollCapture": ScrollCaptureHotkeyModifiers = mod; ScrollCaptureHotkeyKey = key; break;
             case "_record": GifHotkeyModifiers = mod; GifHotkeyKey = key; break;
             default:
-                ToolHotkeys ??= new();
+                ToolHotkeys ??= new(StringComparer.OrdinalIgnoreCase);
                 ToolHotkeys[toolId] = new[] { mod, key };
                 break;
         }

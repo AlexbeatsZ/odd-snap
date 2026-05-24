@@ -23,6 +23,7 @@ public sealed class SettingsService : IDisposable
     private readonly TimeSpan _saveDelay;
     private readonly System.Threading.Timer _flushTimer;
     private readonly object _gate = new();
+    private AppSettings? _pendingSettingsSnapshot;
     private bool _settingsDirty;
     private bool _disposed;
 
@@ -111,29 +112,41 @@ public sealed class SettingsService : IDisposable
 
     public void Save()
     {
-        CacheSettings(_settingsPath, Settings);
+        var snapshot = CloneSettings(Settings);
+        CacheSettings(_settingsPath, snapshot);
 
+        string? saveFailure = null;
         lock (_gate)
         {
+            _pendingSettingsSnapshot = snapshot;
+            _settingsDirty = true;
             if (_disposed)
             {
-                FlushPendingWrites_NoLock();
-                return;
+                saveFailure = FlushPendingWrites_NoLock();
             }
-
-            _settingsDirty = true;
-            _flushTimer.Change(_saveDelay, System.Threading.Timeout.InfiniteTimeSpan);
+            else
+            {
+                _flushTimer.Change(_saveDelay, System.Threading.Timeout.InfiniteTimeSpan);
+            }
         }
+
+        if (saveFailure is not null)
+            NotifySaveFailed(saveFailure);
     }
 
     public void FlushPendingWrites()
     {
+        string? saveFailure;
         lock (_gate)
-            FlushPendingWrites_NoLock();
+            saveFailure = FlushPendingWrites_NoLock();
+
+        if (saveFailure is not null)
+            NotifySaveFailed(saveFailure);
     }
 
     public void Dispose()
     {
+        string? saveFailure = null;
         lock (_gate)
         {
             if (_disposed)
@@ -141,23 +154,40 @@ public sealed class SettingsService : IDisposable
 
             _disposed = true;
             try { _flushTimer.Change(System.Threading.Timeout.InfiniteTimeSpan, System.Threading.Timeout.InfiniteTimeSpan); } catch { }
-            FlushPendingWrites_NoLock();
+            saveFailure = FlushPendingWrites_NoLock();
         }
 
         _flushTimer.Dispose();
+        if (saveFailure is not null)
+            NotifySaveFailed(saveFailure);
+
         GC.SuppressFinalize(this);
     }
 
-    private void FlushPendingWrites_NoLock()
+    private string? FlushPendingWrites_NoLock()
     {
         if (!_settingsDirty)
-            return;
+            return null;
 
-        Directory.CreateDirectory(_settingsDir);
-        var storedSettings = SensitiveSettingsProtection.ProtectForStorage(Settings, JsonOptions);
-        var json = JsonSerializer.Serialize(storedSettings, JsonOptions);
+        var settingsToWrite = _pendingSettingsSnapshot ?? CloneSettings(Settings);
         var tmpPath = _settingsPath + ".tmp";
         bool wrote = false;
+        string? saveFailure = null;
+
+        string json;
+        try
+        {
+            Directory.CreateDirectory(_settingsDir);
+            var storedSettings = SensitiveSettingsProtection.ProtectForStorage(settingsToWrite, JsonOptions);
+            json = JsonSerializer.Serialize(storedSettings, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            TryDeleteSettingsTempFile_NoLock(tmpPath, "failed");
+            AppDiagnostics.LogError("settings.save", ex, $"Failed to prepare settings for {_settingsPath}.");
+            return ex.Message;
+        }
+
         try
         {
             File.WriteAllText(tmpPath, json);
@@ -166,19 +196,31 @@ public sealed class SettingsService : IDisposable
         }
         catch (IOException ex)
         {
-            wrote = TryWriteSettingsFallback_NoLock(tmpPath, json, ex.Message, "IO");
+            wrote = TryWriteSettingsFallback_NoLock(tmpPath, json, ex.Message, "IO", out saveFailure);
         }
         catch (UnauthorizedAccessException ex)
         {
-            wrote = TryWriteSettingsFallback_NoLock(tmpPath, json, ex.Message, "access");
+            wrote = TryWriteSettingsFallback_NoLock(tmpPath, json, ex.Message, "access", out saveFailure);
+        }
+        catch (Exception ex)
+        {
+            TryDeleteSettingsTempFile_NoLock(tmpPath, "failed");
+            AppDiagnostics.LogError("settings.save", ex, $"Failed to persist settings to {_settingsPath}.");
+            saveFailure = ex.Message;
         }
 
         if (wrote)
+        {
             _settingsDirty = false;
+            _pendingSettingsSnapshot = null;
+        }
+
+        return saveFailure;
     }
 
-    private bool TryWriteSettingsFallback_NoLock(string tmpPath, string json, string initialError, string errorKind)
+    private bool TryWriteSettingsFallback_NoLock(string tmpPath, string json, string initialError, string errorKind, out string? saveFailure)
     {
+        saveFailure = null;
         TryDeleteSettingsTempFile_NoLock(tmpPath, "fallback");
         try
         {
@@ -189,7 +231,7 @@ public sealed class SettingsService : IDisposable
         {
             var message = $"Failed to persist settings after {errorKind} error writing {_settingsPath}. Initial error: {initialError}";
             AppDiagnostics.LogError("settings.save", fallbackEx, message);
-            NotifySaveFailed(fallbackEx.Message);
+            saveFailure = fallbackEx.Message;
             return false;
         }
     }
@@ -284,7 +326,10 @@ public sealed class SettingsService : IDisposable
         settings.ImageUploadSettings ??= new UploadSettings();
         settings.StickerUploadSettings ??= new StickerSettings();
         settings.UpscaleUploadSettings ??= new UpscaleSettings();
+        settings.ToastButtons ??= new AppSettings.ToastButtonLayoutSettings();
         settings.OpenWithApps = NormalizeOpenWithApps(settings.OpenWithApps);
+        settings.EnabledTools = NormalizeEnabledTools(settings.EnabledTools);
+        settings.ToolHotkeys = NormalizeToolHotkeys(settings.ToolHotkeys);
         SensitiveSettingsProtection.Unprotect(settings);
 
         if (settings.CompressHistory && settings.CaptureImageFormat == CaptureImageFormat.Png)
@@ -297,16 +342,9 @@ public sealed class SettingsService : IDisposable
         settings.UiScale = OddSnap.UI.UiScale.Normalize(settings.UiScale);
         settings.InterfaceLanguage = LocalizationService.NormalizeLanguageSetting(settings.InterfaceLanguage);
         NormalizeEnums(settings);
+        NormalizeCaptureRuntimeSettings(settings);
         settings.OcrDefaultTranslateFrom = TranslationService.ResolveSourceLanguage(settings.OcrDefaultTranslateFrom);
         settings.OcrDefaultTranslateTo = NormalizeTranslationTargetSetting(settings.OcrDefaultTranslateTo);
-
-        // Migrate older settings to include newly added default tools.
-        if (settings.EnabledTools is { Count: > 0 })
-        {
-            foreach (var tool in ToolDef.DefaultEnabledIds())
-                if (!settings.EnabledTools.Contains(tool))
-                    settings.EnabledTools.Add(tool);
-        }
 
         // Migrate older sticker settings that only stored one local engine.
         using var doc = JsonDocument.Parse(json);
@@ -379,6 +417,46 @@ public sealed class SettingsService : IDisposable
         settings.UpscaleUploadSettings.LocalGpuEngine = NormalizeEnum(settings.UpscaleUploadSettings.LocalGpuEngine, LocalUpscaleEngine.RealEsrganX4Plus);
         settings.UpscaleUploadSettings.LocalExecutionProvider = NormalizeEnum(settings.UpscaleUploadSettings.LocalExecutionProvider, UpscaleExecutionProvider.Cpu);
     }
+
+    private static void NormalizeCaptureRuntimeSettings(AppSettings settings)
+    {
+        settings.SaveDirectory = NormalizeSaveDirectory(settings.SaveDirectory);
+        if (string.IsNullOrWhiteSpace(settings.FileNameTemplate))
+            settings.FileNameTemplate = Helpers.FileNameTemplate.DefaultTemplate;
+
+        settings.CaptureMaxLongEdge = settings.CaptureMaxLongEdge <= 0
+            ? 0
+            : Math.Clamp(settings.CaptureMaxLongEdge, 128, 16_384);
+        settings.JpegQuality = Math.Clamp(settings.JpegQuality, 1, 100);
+        settings.GifFps = NormalizeFps(settings.GifFps, defaultValue: 15, min: 5, max: 30);
+        settings.RecordingFps = NormalizeFps(settings.RecordingFps, defaultValue: 60, min: 5, max: 60);
+        settings.CaptureDelaySeconds = settings.CaptureDelaySeconds switch { 3 or 5 or 10 => settings.CaptureDelaySeconds, _ => 0 };
+        settings.ToastDurationSeconds = NormalizeSeconds(settings.ToastDurationSeconds, defaultValue: 2.5, min: 0.75, max: 30.0);
+        settings.ToastFadeOutSeconds = NormalizeSeconds(settings.ToastFadeOutSeconds, defaultValue: 1.0, min: 0.25, max: 10.0);
+    }
+
+    private static string NormalizeSaveDirectory(string? path)
+    {
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            try
+            {
+                return Path.GetFullPath(Environment.ExpandEnvironmentVariables(path));
+            }
+            catch (Exception ex)
+            {
+                AppDiagnostics.LogWarning("settings.save-directory", $"Invalid save directory in settings. Falling back to default. {ex.Message}", ex);
+            }
+        }
+
+        return new AppSettings().SaveDirectory;
+    }
+
+    private static int NormalizeFps(int fps, int defaultValue, int min, int max)
+        => fps <= 0 ? defaultValue : Math.Clamp(fps, min, max);
+
+    private static double NormalizeSeconds(double value, double defaultValue, double min, double max)
+        => double.IsFinite(value) ? Math.Clamp(value, min, max) : defaultValue;
 
     private static TEnum NormalizeEnum<TEnum>(TEnum value, TEnum fallback)
         where TEnum : struct, Enum =>
@@ -455,6 +533,55 @@ public sealed class SettingsService : IDisposable
         }
 
         return normalized;
+    }
+
+    private static List<string>? NormalizeEnabledTools(List<string>? tools)
+    {
+        if (tools is null)
+            return null;
+
+        var known = ToolDef.AllTools.ToDictionary(tool => tool.Id, StringComparer.OrdinalIgnoreCase);
+        var normalized = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var toolId in tools)
+        {
+            if (string.IsNullOrWhiteSpace(toolId) || !known.TryGetValue(toolId.Trim(), out var tool))
+                continue;
+
+            if (seen.Add(tool.Id))
+                normalized.Add(tool.Id);
+        }
+
+        if (normalized.Count == 0)
+            return null;
+
+        if (!normalized.Any(id => known[id].Group == 0))
+            normalized.Insert(0, ToolDef.AllTools.First(tool => tool.Group == 0).Id);
+
+        return normalized;
+    }
+
+    private static Dictionary<string, uint[]>? NormalizeToolHotkeys(Dictionary<string, uint[]>? hotkeys)
+    {
+        if (hotkeys is null || hotkeys.Count == 0)
+            return hotkeys;
+
+        var knownIds = ToolDef.AllTools
+            .Select(tool => tool.Id)
+            .Concat(new[] { "_fullscreen", "_activeWindow", "_scrollCapture", "_record" })
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var normalized = new Dictionary<string, uint[]>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var pair in hotkeys)
+        {
+            if (string.IsNullOrWhiteSpace(pair.Key) || !knownIds.Contains(pair.Key) || pair.Value is not { Length: >= 2 })
+                continue;
+
+            normalized[pair.Key.Trim()] = new[] { pair.Value[0], pair.Value[1] };
+        }
+
+        return normalized.Count == 0 ? null : normalized;
     }
 
     private static ToastButtonSlot TakeSlot(ToastButtonSlot requested, ToastButtonSlot fallback, HashSet<ToastButtonSlot> used)

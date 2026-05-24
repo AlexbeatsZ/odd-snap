@@ -39,6 +39,8 @@ public sealed partial class RegionOverlayForm : Form
     private string[] _toolbarToolIds = Array.Empty<string>();
     private CaptureMode?[] _toolbarModes = Array.Empty<CaptureMode?>();
     private string? _activeToolId;
+    private readonly Dictionary<string, (uint Modifiers, uint Key)> _toolHotkeysById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<(uint Modifiers, uint Key), ToolDef> _annotationHotkeysByChord = new();
     private int _hoveredButton = -1;
     private int _tooltipButton = -1;
     private WindowsToolTip? _toolbarToolTip;
@@ -68,6 +70,8 @@ public sealed partial class RegionOverlayForm : Form
     private bool _allowDeactivation;
     private bool _cancelRequested;
     private Point _pendingAutoDetectPoint = Point.Empty;
+    private bool _autoDetectQueued;
+    private long _lastAutoDetectFrameMs;
     private bool _firstPaintLogged;
     private long _lastDragPaintLogTicks;
     private bool _crosshairVisible;
@@ -79,7 +83,7 @@ public sealed partial class RegionOverlayForm : Form
     private long _lastSelectionMoveFrameMs;
 
     private const int TopBarHeight = 110;
-    private const int AutoDetectHoverDelayMs = 80;
+    private const long MaxCommittedAnnotationCachePixels = 12_000_000;
 
     // Color picker state
     private readonly Bitmap _magBitmap;
@@ -419,15 +423,8 @@ public sealed partial class RegionOverlayForm : Form
         _pickerTimer.Tick += OnPickerTick;
         if (_mode == CaptureMode.ColorPicker) _pickerTimer.Start();
 
-        _autoDetectTimer = new System.Windows.Forms.Timer { Interval = AutoDetectHoverDelayMs };
-        _autoDetectTimer.Tick += (_, _) =>
-        {
-            _autoDetectTimer.Stop();
-            if (_isSelecting || !ToolDef.IsCaptureTool(_mode) || _mode == CaptureMode.Center || IsPointInOverlayUi(_pendingAutoDetectPoint))
-                return;
-
-            UpdateAutoDetectRect(_pendingAutoDetectPoint);
-        };
+        _autoDetectTimer = new System.Windows.Forms.Timer { Interval = UiChrome.FrameIntervalMs };
+        _autoDetectTimer.Tick += (_, _) => FlushPendingAutoDetectRectUpdate();
 
         _selectionMoveTimer = new System.Windows.Forms.Timer { Interval = UiChrome.FrameIntervalMs };
         _selectionMoveTimer.Tick += (_, _) => FlushPendingSelectionDragMove();

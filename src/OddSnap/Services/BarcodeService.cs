@@ -9,6 +9,8 @@ public sealed record BarcodeDecodeResult(string Text, BarcodeFormat Format);
 
 public static class BarcodeService
 {
+    private const long MaxSourcePixelsForScaledPass = 2_500_000;
+
     private static readonly List<BarcodeFormat> Formats = new()
     {
         BarcodeFormat.QR_CODE,
@@ -64,7 +66,7 @@ public static class BarcodeService
         }
 
         // Vertical 1D barcodes may need a rotated band pass.
-            using (var rotated = (Bitmap)bitmap.Clone())
+        using (var rotated = (Bitmap)bitmap.Clone())
         {
             rotated.RotateFlip(RotateFlipType.Rotate90FlipNone);
             result = TryDecode(rotated, true, true);
@@ -88,6 +90,9 @@ public static class BarcodeService
             if (result is not null) return result;
         }
 
+        if (!ShouldRunScaledPass(bitmap))
+            return null;
+
         // Try a 2x upscaled pass for thin 1D barcodes.
         using var scaled = new Bitmap(bitmap.Width * 2, bitmap.Height * 2);
         using (var g = Graphics.FromImage(scaled))
@@ -101,6 +106,14 @@ public static class BarcodeService
 
         using var scaledThreshold = ToThreshold(scaled, 150);
         return TryDecode(scaledThreshold, true, true);
+    }
+
+    private static bool ShouldRunScaledPass(Bitmap bitmap)
+    {
+        if (bitmap.Width <= 0 || bitmap.Height <= 0)
+            return false;
+
+        return (long)bitmap.Width * bitmap.Height <= MaxSourcePixelsForScaledPass;
     }
 
     public static Bitmap RenderPreview(string text, BarcodeFormat format)

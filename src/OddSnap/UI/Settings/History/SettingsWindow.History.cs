@@ -50,6 +50,8 @@ public partial class SettingsWindow
     private const int ImageHistoryPageSize = HistoryInitialPageSize;
     private const int HistoryAppendPageSize = 18;
     private const int HistoryLookaheadCount = 6;
+    private const int TextHistoryCardCacheLimit = HistoryAppendPageSize * 12;
+    private const int TextHistorySearchCacheLimit = HistoryAppendPageSize * 24;
     private const int HistoryVirtualizationThreshold = 120;
     private const double HistoryCardMargin = 3d;
     private const double HistoryCardPreferredWidth = 168d;
@@ -291,38 +293,42 @@ public partial class SettingsWindow
         try
         {
             await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
             var entries = _historyService.ImageEntries;
             var selectedPaths = _allHistoryItems
                 .Where(i => i.IsSelected)
                 .Select(i => i.Entry.FilePath)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+            cancellationToken.ThrowIfCancellationRequested();
             _allImageHistoryEntries = entries;
             ResetMaterializedImageHistory();
             _historyRenderCount = Math.Min(ImageHistoryPageSize, entries.Count);
             EnsureMaterializedImageHistoryItems(_historyRenderCount, selectedPaths);
+            cancellationToken.ThrowIfCancellationRequested();
             var providerFilterReset = RefreshHistoryUploadProviderFilterItems(entries);
             if (providerFilterReset)
                 EnsureAllImageHistoryItemsMaterialized();
 
+            cancellationToken.ThrowIfCancellationRequested();
             ApplyImageSearchFilter();
             _historyImageCacheReady = true;
             PrimeHistoryFingerprint();
             UpdateHistoryActionButtons();
             if (_settingsService.Settings.AutoIndexImages)
             {
-                _ = Dispatcher.BeginInvoke(() =>
+                _ = TryPostToSettingsDispatcher(() =>
                 {
                     try
                     {
-                        if (IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 0)
+                        if (!_isClosed && IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 0)
                             _imageSearchIndexService.RequestSync(entries, _settingsService.Settings.OcrLanguageTag);
                     }
                     catch (Exception ex)
                     {
                         AppDiagnostics.LogError("settings.image-search-request", ex);
                     }
-                }, System.Windows.Threading.DispatcherPriority.Background);
+                }, System.Windows.Threading.DispatcherPriority.Background, "settings.image-search-request-post");
             }
         }
         catch (OperationCanceledException)
@@ -352,11 +358,14 @@ public partial class SettingsWindow
             {
                 _historyLoadInProgress = false;
                 _deferHistoryMonitor = false;
-                UpdateHistoryMonitorState();
-                if (_pendingHistoryDiskRefresh || _pendingHistoryUiRefresh)
+                if (IsLoaded)
                 {
-                    _historyRefreshTimer.Stop();
-                    _historyRefreshTimer.Start();
+                    UpdateHistoryMonitorState();
+                    if (_pendingHistoryDiskRefresh || _pendingHistoryUiRefresh)
+                    {
+                        _historyRefreshTimer.Stop();
+                        _historyRefreshTimer.Start();
+                    }
                 }
             }
         }
@@ -406,11 +415,11 @@ public partial class SettingsWindow
         PrimeHistoryThumbnailLoads(appended, _allHistoryItems, _historyRenderCount, Math.Max(0, lookaheadCount));
         UpdateLoadedImageHistoryCountText();
 
-        _ = Dispatcher.BeginInvoke(() =>
+        _ = TryPostToSettingsDispatcher(() =>
         {
-            if (IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 0)
+            if (!_isClosed && IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 0)
                 ImagesPanel.ScrollToVerticalOffset(previousOffset);
-        }, System.Windows.Threading.DispatcherPriority.Background);
+        }, System.Windows.Threading.DispatcherPriority.Background, "settings.image-history-append-scroll-post");
         sw.Stop();
         AppDiagnostics.LogInfo(
             "history.append-images",
@@ -719,6 +728,33 @@ public partial class SettingsWindow
         vm.ImageSearchMatchTextBlock = null;
     }
 
+    private static void PruneHistoryCache<TKey, TValue>(
+        Dictionary<TKey, TValue> cache,
+        IReadOnlyList<TKey> currentEntries,
+        int maxEntries)
+        where TKey : notnull
+    {
+        if (cache.Count == 0)
+            return;
+
+        var current = currentEntries.ToHashSet();
+        foreach (var key in cache.Keys.Where(key => !current.Contains(key)).ToList())
+            cache.Remove(key);
+
+        if (cache.Count <= maxEntries)
+            return;
+
+        var keep = currentEntries.Take(maxEntries).ToHashSet();
+        foreach (var key in cache.Keys.Where(key => !keep.Contains(key)).ToList())
+            cache.Remove(key);
+
+        if (cache.Count <= maxEntries)
+            return;
+
+        foreach (var key in cache.Keys.Take(cache.Count - maxEntries).ToList())
+            cache.Remove(key);
+    }
+
     private void ReleaseHistoryUiState()
     {
         ReleaseHistoryCards(_historyItems);
@@ -727,6 +763,20 @@ public partial class SettingsWindow
         ReleaseHistoryCards(_allHistoryItems);
         ReleaseHistoryCards(_allGifItems);
         ReleaseHistoryCards(_allStickerItems);
+        foreach (var card in _ocrHistoryCardCache.Values)
+            DetachElementFromParent(card);
+        foreach (var card in _colorHistoryCardCache.Values)
+            DetachElementFromParent(card);
+        foreach (var card in _codeHistoryCardCache.Values)
+            DetachElementFromParent(card);
+
+        HistoryStack.Children.Clear();
+        GifStack.Children.Clear();
+        StickerStack.Children.Clear();
+        OcrStack.Children.Clear();
+        ColorStack.Children.Clear();
+        CodeStack.Children.Clear();
+
         _historyItems.Clear();
         _filteredHistoryItems.Clear();
         _gifItems.Clear();
@@ -737,7 +787,23 @@ public partial class SettingsWindow
         _allStickerItems.Clear();
         _filteredGifItems.Clear();
         _filteredStickerItems.Clear();
+        _filteredOcrEntries.Clear();
+        _filteredColorEntries.Clear();
+        _filteredCodeEntries.Clear();
         _lastImmediateSearchResults.Clear();
+        _ocrHistoryCardCache.Clear();
+        _colorHistoryCardCache.Clear();
+        _codeHistoryCardCache.Clear();
+        _codePreviewCache.Clear();
+        _ocrSearchTextCache.Clear();
+        _colorSearchTextCache.Clear();
+        _codeSearchTextCache.Clear();
+        _ocrRenderCount = 0;
+        _colorRenderCount = 0;
+        _codeRenderCount = 0;
+        _ocrLastRenderedDate = null;
+        _colorLastRenderedDate = null;
+        _codeLastRenderedDate = null;
     }
 
     private void RefreshHistoryCardTextMetadata(HistoryItemVM vm)
@@ -1290,11 +1356,11 @@ public partial class SettingsWindow
         var lookahead = Math.Min(HistoryLookaheadCount, _filteredStickerItems.Count - _stickerRenderCount);
         PrimeHistoryThumbnailLoads(appended, _filteredStickerItems, _stickerRenderCount, Math.Max(0, lookahead));
 
-        _ = Dispatcher.BeginInvoke(() =>
+        _ = TryPostToSettingsDispatcher(() =>
         {
-            if (IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 4)
+            if (!_isClosed && IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 4)
                 StickersPanel.ScrollToVerticalOffset(previousOffset);
-        }, System.Windows.Threading.DispatcherPriority.Background);
+        }, System.Windows.Threading.DispatcherPriority.Background, "settings.sticker-history-scroll-post");
     }
 
     private void AppendGroupedHistoryItems(System.Windows.Controls.Panel target, IEnumerable<HistoryItemVM> items, Func<HistoryItemVM, Border> cardFactory)

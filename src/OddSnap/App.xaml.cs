@@ -27,6 +27,7 @@ public partial class App : Application
     private TrayIcon? _trayIcon;
     private SettingsWindow? _settingsWindow;
     private DispatcherTimer? _idleTrimTimer;
+    private DispatcherTimer? _captureDelayTimer;
     private int _activeUploadCount;
     private int _isCapturing;
     private bool _historyRecovered;
@@ -36,7 +37,74 @@ public partial class App : Application
     private int _settingsWindowOpening;
     private int _settingsHiddenForCapture;
     private int _idleTrimInProgress;
+    private int _isShuttingDown;
+    private bool _readyToastShown;
     private long _captureRequestedTimestamp;
     private DateTime _lastIdleTrimUtc = DateTime.MinValue;
     private int _openHistoryWhenSettingsReady;
+
+    private bool TryPostToAppDispatcher(
+        Action action,
+        DispatcherPriority priority = DispatcherPriority.Normal,
+        string diagnosticKey = "app.dispatcher-post")
+    {
+        if (Volatile.Read(ref _isShuttingDown) != 0 ||
+            Dispatcher.HasShutdownStarted ||
+            Dispatcher.HasShutdownFinished)
+        {
+            return false;
+        }
+
+        try
+        {
+            _ = Dispatcher.BeginInvoke(action, priority);
+            return true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            AppDiagnostics.LogWarning(diagnosticKey, ex.Message, ex);
+            return false;
+        }
+    }
+
+    private bool TryPostToAppDispatcherAsync(
+        Func<Task> action,
+        DispatcherPriority priority = DispatcherPriority.Normal,
+        string diagnosticKey = "app.dispatcher-post-async")
+    {
+        if (Volatile.Read(ref _isShuttingDown) != 0 ||
+            Dispatcher.HasShutdownStarted ||
+            Dispatcher.HasShutdownFinished)
+        {
+            return false;
+        }
+
+        try
+        {
+            Action wrapped = async () =>
+            {
+                try
+                {
+                    await action();
+                }
+                catch (Exception ex)
+                {
+                    AppDiagnostics.LogError(diagnosticKey, ex);
+                }
+            };
+            _ = Dispatcher.BeginInvoke(wrapped, priority);
+            return true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            AppDiagnostics.LogWarning(diagnosticKey, ex.Message, ex);
+            return false;
+        }
+    }
+
+    private void ResetCapturingWithoutUiRestore()
+    {
+        Volatile.Write(ref _isCapturing, 0);
+        Interlocked.Exchange(ref _settingsHiddenForCapture, 0);
+    }
 }

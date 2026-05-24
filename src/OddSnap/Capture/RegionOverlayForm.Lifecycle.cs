@@ -44,7 +44,7 @@ public sealed partial class RegionOverlayForm
             {
                 try
                 {
-                    await Task.Delay(220).ConfigureAwait(false);
+                    await Task.Delay(40).ConfigureAwait(false);
                     if (IsDisposed || Disposing || !Visible)
                         return;
 
@@ -605,6 +605,7 @@ public sealed partial class RegionOverlayForm
 
         _cancelRequested = true;
         _allowDeactivation = true;
+        try { CancelActivePointerInteraction(); } catch { }
         try { Hide(); } catch { }
         try { HideToolbarImmediately(); } catch { }
         try { HideTextBox(); } catch { }
@@ -627,6 +628,8 @@ public sealed partial class RegionOverlayForm
         {
             if (_currentOverlay == this)
                 _currentOverlay = null;
+            if (IsHandleCreated)
+                CaptureWindowExclusion.Unregister(Handle);
             _escapeHook?.Dispose();
             _escapeHook = null;
             ClearCrosshairGuides();
@@ -646,9 +649,12 @@ public sealed partial class RegionOverlayForm
             _pickerTimer.Dispose();
             _autoDetectTimer.Dispose();
             _selectionMoveTimer.Dispose();
+            _blurPreviewGraphics?.Dispose();
+            _blurPreviewBitmap?.Dispose();
             _magGfx.Dispose();
             _magBitmap.Dispose();
             _committedAnnotationsBitmap?.Dispose();
+            _emojiRenderer.Dispose();
             _hexFont.Dispose();
             _rgbFont.Dispose();
             _readoutFont.Dispose();
@@ -658,6 +664,7 @@ public sealed partial class RegionOverlayForm
             _fontCache.Clear();
             foreach (var f in _annotationFontCache.Values) f?.Dispose();
             _annotationFontCache.Clear();
+            DisposePickerChromeResources();
         }
         base.Dispose(disposing);
     }

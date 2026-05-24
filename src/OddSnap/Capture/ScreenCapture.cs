@@ -9,6 +9,10 @@ namespace OddSnap.Capture;
 
 public static class ScreenCapture
 {
+    private const int DefaultBitBltRasterOperation = User32.SRCCOPY | User32.CAPTUREBLT;
+    // Recording chrome is layered and capture-excluded; avoid CAPTUREBLT so it can stay visible without being recorded.
+    private const int RecordingBitBltRasterOperation = User32.SRCCOPY;
+
     public static bool HdrCaptureCompatibleMode { get; set; }
 
     public static Rectangle GetVirtualScreenBounds()
@@ -130,7 +134,7 @@ public static class ScreenCapture
     /// recreates device/duplication resources per call, which is too expensive for recording.
     /// </summary>
     public static Bitmap CaptureRegionForRecording(Rectangle region, bool includeCursor = false)
-        => CaptureRegionLegacy(region, includeCursor);
+        => CaptureRegionLegacy(region, includeCursor, RecordingBitBltRasterOperation);
 
     internal static RecordingFrameCapturer CreateRecordingFrameCapturer(Rectangle region, bool includeCursor = false)
         => new(region, includeCursor);
@@ -151,7 +155,7 @@ public static class ScreenCapture
             try
             {
                 hdcDest = graphics.GetHdc();
-                bool ok = Gdi32.BitBlt(hdcDest, 0, 0, width, height, hdcScreen, left, top, User32.SRCCOPY | User32.CAPTUREBLT);
+                bool ok = Gdi32.BitBlt(hdcDest, 0, 0, width, height, hdcScreen, left, top, DefaultBitBltRasterOperation);
                 if (!ok)
                     throw new InvalidOperationException("Screen capture failed (BitBlt returned false).");
             }
@@ -176,6 +180,9 @@ public static class ScreenCapture
 
     /// <summary>Captures a specific screen region directly via BitBlt. Used by GIF recorder.</summary>
     private static Bitmap CaptureRegionLegacy(Rectangle region, bool includeCursor)
+        => CaptureRegionLegacy(region, includeCursor, DefaultBitBltRasterOperation);
+
+    private static Bitmap CaptureRegionLegacy(Rectangle region, bool includeCursor, int rasterOperation)
     {
         var bmp = new Bitmap(region.Width, region.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
         try
@@ -186,7 +193,7 @@ public static class ScreenCapture
             try
             {
                 hdcDest = g.GetHdc();
-                bool ok = Gdi32.BitBlt(hdcDest, 0, 0, region.Width, region.Height, hdcScreen, region.X, region.Y, User32.SRCCOPY | User32.CAPTUREBLT);
+                bool ok = Gdi32.BitBlt(hdcDest, 0, 0, region.Width, region.Height, hdcScreen, region.X, region.Y, rasterOperation);
                 if (!ok)
                     throw new InvalidOperationException("Screen capture failed (BitBlt returned false).");
             }
@@ -398,7 +405,7 @@ public static class ScreenCapture
             try
             {
                 hdcDest = _graphics.GetHdc();
-                bool ok = Gdi32.BitBlt(hdcDest, 0, 0, _region.Width, _region.Height, _hdcScreen, _region.X, _region.Y, User32.SRCCOPY | User32.CAPTUREBLT);
+                bool ok = Gdi32.BitBlt(hdcDest, 0, 0, _region.Width, _region.Height, _hdcScreen, _region.X, _region.Y, RecordingBitBltRasterOperation);
                 if (!ok)
                     throw new InvalidOperationException("Screen capture failed (BitBlt returned false).");
 
@@ -415,6 +422,13 @@ public static class ScreenCapture
         public Bitmap CloneCurrentFrame()
         {
             ThrowIfDisposed();
+            return new Bitmap(_bitmap);
+        }
+
+        public Bitmap CaptureBitmap()
+        {
+            ThrowIfDisposed();
+            CaptureCurrentFrame();
             return new Bitmap(_bitmap);
         }
 

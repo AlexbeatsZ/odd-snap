@@ -18,6 +18,7 @@ public sealed partial class RegionOverlayForm
         int btn = GetToolbarButtonAt(e.Location);
         if (btn >= 0)
         {
+            CloseCaptureMagnifier();
             if (btn == BtnCount - 1) { Cancel(); return; }     // close
             if (btn == ColorButtonIndex) { ToggleColorPicker(); return; } // color dot
             if (_moreButtonIndex >= 0 && btn == _moreButtonIndex)
@@ -35,9 +36,13 @@ public sealed partial class RegionOverlayForm
 
         if (_flyoutOpen)
         {
+            CloseCaptureMagnifier();
             CloseMoreToolsDropdown();
             return;
         }
+
+        if (!ToolDef.IsCaptureTool(_mode))
+            CloseCaptureMagnifier();
 
         // Color picker popup: check if clicked a swatch
         if (_colorPickerOpen)
@@ -254,8 +259,7 @@ public sealed partial class RegionOverlayForm
                 var previousAutoDetectRect = _autoDetectRect;
                 bool previousSelectionVisible = _hasSelection;
                 bool previousAutoDetectVisible = _autoDetectActive;
-                _autoDetectTimer.Stop();
-                _pendingAutoDetectPoint = Point.Empty;
+                ResetAutoDetectUpdateQueue();
                 _autoDetectRect = Rectangle.Empty;
                 _autoDetectActive = false;
                 _isSelecting = true;

@@ -298,6 +298,8 @@ public sealed class PickerMagnifierForm : Form
     {
         if (disposing)
         {
+            if (IsHandleCreated)
+                CaptureWindowExclusion.Unregister(Handle);
             _lastMagnifier = null;
             _surfaceGraphics?.Dispose();
             _surface?.Dispose();

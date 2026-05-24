@@ -152,24 +152,33 @@ public sealed partial class HistoryService : IDisposable
 
     public string GetDiskFingerprint(string saveDirectory)
     {
+        var hash = new HashCode();
+
+        AddDirectorySignature(hash, HistoryDir);
+        AddDirectorySignature(hash, StickerDir);
+        AddDirectoryTreeSignature(hash, saveDirectory);
+        AddDirectoryTreeSignature(hash, Path.Combine(saveDirectory, "Videos"));
+
+        AddFileSignature(hash, DatabasePath);
+
+        int entryCount;
+        int ocrCount;
+        int colorCount;
+        int codeCount;
         lock (_gate)
         {
-            var hash = new HashCode();
-
-            AddDirectorySignature(hash, HistoryDir);
-            AddDirectorySignature(hash, StickerDir);
-            AddDirectoryTreeSignature(hash, saveDirectory);
-            AddDirectoryTreeSignature(hash, Path.Combine(saveDirectory, "Videos"));
-
-            AddFileSignature(hash, DatabasePath);
-
-            hash.Add(_entries.Count);
-            hash.Add(_ocrEntries.Count);
-            hash.Add(_colorEntries.Count);
-            hash.Add(_codeEntries.Count);
-
-            return hash.ToHashCode().ToString("X8");
+            entryCount = _entries.Count;
+            ocrCount = _ocrEntries.Count;
+            colorCount = _colorEntries.Count;
+            codeCount = _codeEntries.Count;
         }
+
+        hash.Add(entryCount);
+        hash.Add(ocrCount);
+        hash.Add(colorCount);
+        hash.Add(codeCount);
+
+        return hash.ToHashCode().ToString("X8");
     }
 
     public void Load()
@@ -345,8 +354,11 @@ public sealed partial class HistoryService : IDisposable
         {
             entry = new HistoryEntry
             {
-                FileName = fileName, FilePath = filePath, CapturedAt = now,
-                Width = screenshot.Width, Height = screenshot.Height,
+                FileName = fileName,
+                FilePath = filePath,
+                CapturedAt = now,
+                Width = screenshot.Width,
+                Height = screenshot.Height,
                 FileSizeBytes = fileSizeBytes,
                 Kind = HistoryKind.Image
             };

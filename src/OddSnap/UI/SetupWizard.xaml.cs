@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.ComponentModel;
 using System.Windows.Input;
 using System.Windows.Media.Animation;
 using OddSnap.Helpers;
@@ -27,6 +28,8 @@ public partial class SetupWizard : Window
         ("upscale",        "Upscale",           ToolGlyphs.UpscaleGlyph),
         ("_record",        "Record",             ToolGlyphs.RecordGlyph),
     };
+
+    private sealed record HotkeyConflict(string ToolId, string Label, bool IsAiRedirect);
 
     public SetupWizard(SettingsService settingsService)
     {
@@ -69,7 +72,8 @@ public partial class SetupWizard : Window
                 var img = new System.Windows.Controls.Image
                 {
                     Source = ToolIcons.RenderToolIconWpf(id, icon, iconColor, 20),
-                    Width = 18, Height = 18,
+                    Width = 18,
+                    Height = 18,
                     VerticalAlignment = VerticalAlignment.Center,
                     Margin = new Thickness(0, 0, 10, 0),
                 };
@@ -78,7 +82,9 @@ public partial class SetupWizard : Window
             }
             left.Children.Add(new TextBlock
             {
-                Text = label, FontSize = 13, FontFamily = segoe,
+                Text = label,
+                FontSize = 13,
+                FontFamily = segoe,
                 Foreground = (System.Windows.Media.Brush)FindResource("WizFg"),
                 VerticalAlignment = VerticalAlignment.Center,
             });
@@ -105,27 +111,69 @@ public partial class SetupWizard : Window
     private void WireHotkey(TextBox box, string toolId)
     {
         bool recording = false;
-        box.GotFocus += (_, _) => { recording = true; box.Text = LocalizationService.Translate("Press keys..."); };
-        box.LostFocus += (_, _) =>
+        void RestoreHotkeyText()
         {
             recording = false;
             var (m, k) = _settingsService.Settings.GetToolHotkey(toolId);
             box.Text = HotkeyFormatter.Format(m, k);
+        }
+
+        box.GotFocus += (_, _) => { recording = true; box.Text = LocalizationService.Translate("Press keys..."); };
+        box.LostFocus += (_, _) =>
+        {
+            RestoreHotkeyText();
         };
         void HandleKey(Key rawKey)
         {
             if (!recording) return;
             var key = rawKey == Key.System ? Key.None : rawKey;
             if (key == Key.None) return;
+            if (key == Key.Escape)
+            {
+                RestoreHotkeyText();
+                Keyboard.ClearFocus();
+                return;
+            }
+
             if (key is Key.LeftAlt or Key.RightAlt or Key.LeftCtrl or Key.RightCtrl
-                or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin or Key.Escape)
+                or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin)
                 return;
 
             uint mod = HotkeyFormatter.GetActiveModifiers();
             uint vk = (uint)KeyInterop.VirtualKeyFromKey(key);
             if (vk == 0) return;
+            if (IsUnsafeModifierlessHotkey(mod, vk))
+            {
+                ToastWindow.ShowError(
+                    "Hotkey needs a modifier",
+                    "Use Ctrl, Alt, Shift, or Win with this key. Print Screen can be used by itself.");
+                RestoreHotkeyText();
+                Keyboard.ClearFocus();
+                return;
+            }
 
             var previous = _settingsService.Settings.GetToolHotkey(toolId);
+            var conflict = FindHotkeyConflict(_settingsService.Settings, toolId, mod, vk);
+            (uint Modifiers, uint Key)? clearedConflict = null;
+            if (conflict != null)
+            {
+                var combo = HotkeyFormatter.Format(mod, vk);
+                if (!ThemedConfirmDialog.Confirm(
+                        this,
+                        "Hotkey conflict",
+                        $"{combo} is already used by \"{conflict.Label}\".\n\nReplace it?",
+                        "Replace",
+                        "Cancel",
+                        danger: false))
+                {
+                    RestoreHotkeyText();
+                    Keyboard.ClearFocus();
+                    return;
+                }
+
+                clearedConflict = ClearHotkeyConflict(_settingsService.Settings, conflict);
+            }
+
             try
             {
                 _settingsService.Settings.SetToolHotkey(toolId, mod, vk);
@@ -136,6 +184,9 @@ public partial class SetupWizard : Window
             {
                 AppDiagnostics.LogError("setup.tool-hotkey", ex);
                 _settingsService.Settings.SetToolHotkey(toolId, previous.mod, previous.key);
+                if (conflict != null)
+                    RestoreHotkeyConflict(_settingsService.Settings, conflict, clearedConflict);
+
                 try
                 {
                     _settingsService.Save();
@@ -146,7 +197,7 @@ public partial class SetupWizard : Window
                 }
 
                 box.Text = HotkeyFormatter.Format(previous.mod, previous.key);
-                ShowSetupHotkeySaveFailed(ex);
+                ShowSetupHotkeySaveFailed(clearedConflict.HasValue, ex);
             }
             finally
             {
@@ -159,14 +210,13 @@ public partial class SetupWizard : Window
         {
             if (!recording) return;
             e.Handled = true;
-            var key = e.Key == Key.System ? e.SystemKey : e.Key;
-            HandleKey(key);
+            HandleKey(NormalizeHotkeyKey(e));
         };
         // PrintScreen and some special keys only arrive on KeyUp
         box.PreviewKeyUp += (_, e) =>
         {
             if (!recording) return;
-            var key = e.Key == Key.System ? e.SystemKey : e.Key;
+            var key = NormalizeHotkeyKey(e);
             if (key is Key.Snapshot or Key.Pause or Key.Cancel)
             {
                 e.Handled = true;
@@ -175,11 +225,89 @@ public partial class SetupWizard : Window
         };
     }
 
-    private static void ShowSetupHotkeySaveFailed(Exception ex)
+    private static void ShowSetupHotkeySaveFailed(bool restoredConflict, Exception ex)
     {
+        var conflictCopy = restoredConflict
+            ? " Any replaced hotkey was restored."
+            : string.Empty;
         ToastWindow.ShowError(
             "Hotkey failed",
-            $"The previous hotkey was restored. Try this setup step again, or change it later in Settings -> Tools.\n{ex.Message}");
+            $"The previous hotkey was restored.{conflictCopy} Try this setup step again, or change it later in Settings -> Tools.\n{ex.Message}");
+    }
+
+    private static Key NormalizeHotkeyKey(System.Windows.Input.KeyEventArgs e)
+    {
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (key == Key.ImeProcessed)
+            key = e.ImeProcessedKey;
+        if (key == Key.DeadCharProcessed)
+            key = e.DeadCharProcessedKey;
+        return key;
+    }
+
+    private static bool IsUnsafeModifierlessHotkey(uint mod, uint vk) =>
+        mod == 0 && vk != Native.User32.VK_SNAPSHOT;
+
+    private static HotkeyConflict? FindHotkeyConflict(AppSettings settings, string currentToolId, uint mod, uint key)
+    {
+        foreach (var tool in ToolDef.AllTools)
+        {
+            if (string.Equals(tool.Id, currentToolId, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var (existingMod, existingKey) = settings.GetToolHotkey(tool.Id);
+            if (existingKey != 0 && existingMod == mod && existingKey == key)
+                return new HotkeyConflict(tool.Id, tool.Label, IsAiRedirect: false);
+        }
+
+        foreach (var (id, label, _) in ToolListBuilder.ExtraTools)
+        {
+            if (string.Equals(id, currentToolId, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var (existingMod, existingKey) = settings.GetToolHotkey(id);
+            if (existingKey != 0 && existingMod == mod && existingKey == key)
+                return new HotkeyConflict(id, label, IsAiRedirect: false);
+        }
+
+        if (settings.AiRedirectHotkeyKey != 0 &&
+            settings.AiRedirectHotkeyModifiers == mod &&
+            settings.AiRedirectHotkeyKey == key)
+        {
+            return new HotkeyConflict("", "AI Redirect", IsAiRedirect: true);
+        }
+
+        return null;
+    }
+
+    private static (uint Modifiers, uint Key) ClearHotkeyConflict(AppSettings settings, HotkeyConflict conflict)
+    {
+        if (conflict.IsAiRedirect)
+        {
+            var previous = (settings.AiRedirectHotkeyModifiers, settings.AiRedirectHotkeyKey);
+            settings.AiRedirectHotkeyModifiers = 0;
+            settings.AiRedirectHotkeyKey = 0;
+            return previous;
+        }
+
+        var old = settings.GetToolHotkey(conflict.ToolId);
+        settings.SetToolHotkey(conflict.ToolId, 0, 0);
+        return old;
+    }
+
+    private static void RestoreHotkeyConflict(AppSettings settings, HotkeyConflict conflict, (uint Modifiers, uint Key)? previous)
+    {
+        if (previous is null)
+            return;
+
+        if (conflict.IsAiRedirect)
+        {
+            settings.AiRedirectHotkeyModifiers = previous.Value.Modifiers;
+            settings.AiRedirectHotkeyKey = previous.Value.Key;
+            return;
+        }
+
+        settings.SetToolHotkey(conflict.ToolId, previous.Value.Modifiers, previous.Value.Key);
     }
 
     private void LoadDefaults()
@@ -340,7 +468,7 @@ public partial class SetupWizard : Window
             GoToPage(_page + 1);
         else
         {
-            if (!SaveCurrentPage())
+            if (!TryCompleteSetupForDismissal())
                 return;
 
             DialogResult = true;
@@ -384,7 +512,7 @@ public partial class SetupWizard : Window
 
     private void OpenSettings_Click(object sender, RoutedEventArgs e)
     {
-        if (!SaveCurrentPage() || !MarkSetupCompleted())
+        if (!TryCompleteSetupForDismissal())
             return;
 
         Tag = "OpenSettings";
@@ -394,11 +522,27 @@ public partial class SetupWizard : Window
 
     private void Skip_Click(object sender, RoutedEventArgs e)
     {
-        if (!SaveCurrentPage() || !MarkSetupCompleted())
+        if (!TryCompleteSetupForDismissal())
             return;
 
         DialogResult = false;
         Close();
+    }
+
+    private bool TryCompleteSetupForDismissal()
+    {
+        if (!SaveCurrentPage())
+            return false;
+
+        return _settingsService.Settings.HasCompletedSetup || MarkSetupCompleted();
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        if (!e.Cancel && !_settingsService.Settings.HasCompletedSetup && !TryCompleteSetupForDismissal())
+            e.Cancel = true;
+
+        base.OnClosing(e);
     }
 
     private bool MarkSetupCompleted()

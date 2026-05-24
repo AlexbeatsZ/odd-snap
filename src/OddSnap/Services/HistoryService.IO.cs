@@ -422,6 +422,9 @@ public sealed partial class HistoryService
 
     private void ScheduleFlush_NoLock()
     {
+        if (_disposed)
+            return;
+
         _flushTimer.Change(250, Timeout.Infinite);
     }
 

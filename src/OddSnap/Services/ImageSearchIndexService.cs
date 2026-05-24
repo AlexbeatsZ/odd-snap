@@ -269,6 +269,7 @@ public sealed partial class ImageSearchIndexService : IDisposable
     private bool _syncRequested;
     private bool _syncLoopRunning;
     private bool _disposed;
+    private int _disposeResourcesStarted;
     private int _version;
     private string _statusText = "Search index idle";
     private Task? _syncLoopTask;
@@ -484,12 +485,45 @@ public sealed partial class ImageSearchIndexService : IDisposable
 
     public void Dispose()
     {
-        if (_disposed)
+        Task? syncLoopTask;
+        lock (_gate)
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+            _syncRequested = false;
+            _pendingEntries = Array.Empty<HistoryEntry>();
+            _pendingOcrLanguageTag = null;
+            syncLoopTask = _syncLoopTask;
+        }
+
+        _lifetimeCts.Cancel();
+
+        if (syncLoopTask is null || syncLoopTask.IsCompleted || WaitForSyncLoopToSettle(syncLoopTask, TimeSpan.FromMilliseconds(250)))
+        {
+            DisposeSyncResources();
+            return;
+        }
+
+        _ = syncLoopTask.ContinueWith(
+            _ => DisposeSyncResources(),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private static bool WaitForSyncLoopToSettle(Task task, TimeSpan timeout)
+    {
+        try { return task.Wait(timeout); }
+        catch { return true; }
+    }
+
+    private void DisposeSyncResources()
+    {
+        if (Interlocked.Exchange(ref _disposeResourcesStarted, 1) != 0)
             return;
 
-        _disposed = true;
-        _lifetimeCts.Cancel();
-        try { _syncLoopTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
         _syncGate.Dispose();
         _lifetimeCts.Dispose();
     }

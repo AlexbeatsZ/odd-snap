@@ -52,6 +52,8 @@ public sealed class UpscaleResult
 
 public static class UpscaleService
 {
+    private const long MaxDeepAiJsonResponseBytes = 1L * 1024 * 1024;
+    private const long MaxDeepAiImageResponseBytes = 128L * 1024 * 1024;
     private static readonly HttpClient Http = new()
     {
         Timeout = TimeSpan.FromSeconds(180),
@@ -66,24 +68,25 @@ public static class UpscaleService
         _ => ""
     };
 
-    public static async Task<UpscaleResult> ProcessAsync(Bitmap input, UpscaleSettings settings)
+    public static async Task<UpscaleResult> ProcessAsync(Bitmap input, UpscaleSettings settings, CancellationToken cancellationToken = default)
     {
         return settings.Provider switch
         {
-            UpscaleProvider.Local => await ProcessLocalAsync(input, settings),
-            UpscaleProvider.DeepAiSuperResolution => await ProcessDeepAiAsync(input, settings, "https://api.deepai.org/api/torch-srgan", "DeepAI Super Resolution"),
-            UpscaleProvider.DeepAiWaifu2x => await ProcessDeepAiAsync(input, settings, "https://api.deepai.org/api/waifu2x", "DeepAI Waifu2x"),
+            UpscaleProvider.Local => await ProcessLocalAsync(input, settings, cancellationToken),
+            UpscaleProvider.DeepAiSuperResolution => await ProcessDeepAiAsync(input, settings, "https://api.deepai.org/api/torch-srgan", "DeepAI Super Resolution", cancellationToken),
+            UpscaleProvider.DeepAiWaifu2x => await ProcessDeepAiAsync(input, settings, "https://api.deepai.org/api/waifu2x", "DeepAI Waifu2x", cancellationToken),
             _ => new UpscaleResult { Error = "No upscale provider configured" }
         };
     }
 
-    private static async Task<UpscaleResult> ProcessDeepAiAsync(Bitmap input, UpscaleSettings settings, string endpoint, string providerName)
+    private static async Task<UpscaleResult> ProcessDeepAiAsync(Bitmap input, UpscaleSettings settings, string endpoint, string providerName, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(settings.DeepAiApiKey))
             return new UpscaleResult { Error = $"{providerName} API key not configured", ProviderName = providerName };
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             using var imageStream = new MemoryStream();
             CaptureOutputService.WritePng(input, imageStream);
             imageStream.Position = 0;
@@ -99,8 +102,11 @@ public static class UpscaleService
             };
             request.Headers.TryAddWithoutValidation("api-key", settings.DeepAiApiKey);
 
-            using var response = await Http.SendAsync(request);
-            var payload = await response.Content.ReadAsByteArrayAsync();
+            using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            var payload = await HttpContentReader.ReadLimitedBytesAsync(
+                response.Content,
+                MaxDeepAiJsonResponseBytes,
+                cancellationToken).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 var body = System.Text.Encoding.UTF8.GetString(payload);
@@ -121,8 +127,11 @@ public static class UpscaleService
             if (string.IsNullOrWhiteSpace(outputUrl))
                 return new UpscaleResult { Error = $"{providerName} returned an empty output URL", ProviderName = providerName };
 
-            using var outputResponse = await Http.GetAsync(outputUrl);
-            var imageBytes = await outputResponse.Content.ReadAsByteArrayAsync();
+            using var outputResponse = await Http.GetAsync(outputUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            var imageBytes = await HttpContentReader.ReadLimitedBytesAsync(
+                outputResponse.Content,
+                MaxDeepAiImageResponseBytes,
+                cancellationToken).ConfigureAwait(false);
             if (!outputResponse.IsSuccessStatusCode || imageBytes.Length == 0)
                 return new UpscaleResult { Error = $"{providerName} failed to fetch the output image", ProviderName = providerName };
 
@@ -141,17 +150,19 @@ public static class UpscaleService
         }
     }
 
-    private static async Task<UpscaleResult> ProcessLocalAsync(Bitmap input, UpscaleSettings settings)
+    private static async Task<UpscaleResult> ProcessLocalAsync(Bitmap input, UpscaleSettings settings, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var selectedEngine = settings.GetActiveLocalEngine();
         if (settings.LocalExecutionProvider == UpscaleExecutionProvider.Gpu)
         {
-            var gpuAttempt = await TryProcessLocalAsync(input, selectedEngine, UpscaleExecutionProvider.Gpu, settings.ScaleFactor);
+            var gpuAttempt = await TryProcessLocalAsync(input, selectedEngine, UpscaleExecutionProvider.Gpu, settings.ScaleFactor, cancellationToken);
             if (gpuAttempt.Success)
                 return gpuAttempt;
 
+            cancellationToken.ThrowIfCancellationRequested();
             var cpuFallbackEngine = settings.LocalCpuEngine;
-            var cpuFallback = await TryProcessLocalAsync(input, cpuFallbackEngine, UpscaleExecutionProvider.Cpu, settings.ScaleFactor);
+            var cpuFallback = await TryProcessLocalAsync(input, cpuFallbackEngine, UpscaleExecutionProvider.Cpu, settings.ScaleFactor, cancellationToken);
             if (cpuFallback.Success)
             {
                 return new UpscaleResult
@@ -169,14 +180,14 @@ public static class UpscaleService
             };
         }
 
-        return await TryProcessLocalAsync(input, selectedEngine, UpscaleExecutionProvider.Cpu, settings.ScaleFactor);
+        return await TryProcessLocalAsync(input, selectedEngine, UpscaleExecutionProvider.Cpu, settings.ScaleFactor, cancellationToken);
     }
 
-    private static async Task<UpscaleResult> TryProcessLocalAsync(Bitmap input, LocalUpscaleEngine engine, UpscaleExecutionProvider executionProvider, int scaleFactor)
+    private static async Task<UpscaleResult> TryProcessLocalAsync(Bitmap input, LocalUpscaleEngine engine, UpscaleExecutionProvider executionProvider, int scaleFactor, CancellationToken cancellationToken)
     {
         try
         {
-            var processed = await Task.Run(() => LocalUpscaleEngineService.Process(input, engine, executionProvider, scaleFactor));
+            var processed = await Task.Run(() => LocalUpscaleEngineService.Process(input, engine, executionProvider, scaleFactor), cancellationToken);
             return new UpscaleResult
             {
                 Success = true,

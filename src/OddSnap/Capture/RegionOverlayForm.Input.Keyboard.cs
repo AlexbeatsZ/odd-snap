@@ -37,6 +37,7 @@ public sealed partial class RegionOverlayForm
         // Undo must work in all states (emoji placing, typing, etc.)
         if (e.KeyCode == Keys.Z && e.Control && _undoStack.Count > 0)
         {
+            CancelActivePointerInteraction();
             var last = RemoveLastAnnotation();
             _redoStack.Add(last);
             // Update step counter when undoing a step number
@@ -45,12 +46,15 @@ public sealed partial class RegionOverlayForm
                 var remaining = _undoStack.OfType<StepNumberAnnotation>().LastOrDefault();
                 _nextStepNumber = remaining != null ? remaining.Number + 1 : 1;
             }
+            if (_selectedAnnotationIndex >= _undoStack.Count)
+                _selectedAnnotationIndex = -1;
             Invalidate(InflateForRepaint(GetAnnotationBounds(last)));
             return;
         }
 
         if ((e.KeyCode == Keys.Y && e.Control || e.KeyCode == Keys.Z && e.Control && e.Shift) && _redoStack.Count > 0)
         {
+            CancelActivePointerInteraction();
             var annotation = _redoStack[^1];
             _redoStack.RemoveAt(_redoStack.Count - 1);
             RestoreAnnotation(annotation);
@@ -85,6 +89,7 @@ public sealed partial class RegionOverlayForm
         if (e.KeyCode == Keys.Delete && _mode == CaptureMode.Select && _selectedAnnotationIndex >= 0 && _selectedAnnotationIndex < _undoStack.Count)
         {
             var bounds = InflateForRepaint(GetAnnotationBounds(_undoStack[_selectedAnnotationIndex]));
+            CancelActivePointerInteraction();
             _undoStack.RemoveAt(_selectedAnnotationIndex);
             _redoStack.Clear();
             MarkCommittedAnnotationsDirty();
@@ -100,22 +105,13 @@ public sealed partial class RegionOverlayForm
 
     private bool TryHandleAnnotationToolHotkey(Keys keyCode)
     {
-        var settings = Services.SettingsService.LoadStatic();
-        if (settings is null)
-            return false;
-
         uint mod = 0;
         if ((ModifierKeys & Keys.Control) != 0) mod |= Native.User32.MOD_CONTROL;
         if ((ModifierKeys & Keys.Alt) != 0) mod |= Native.User32.MOD_ALT;
         if ((ModifierKeys & Keys.Shift) != 0) mod |= Native.User32.MOD_SHIFT;
         uint vk = unchecked((uint)(keyCode & Keys.KeyCode));
 
-        var toolId = settings.FindAnnotationToolId(mod, vk, _visibleTools.Where(t => t.Group == 1).Select(t => t.Id));
-        if (toolId is null)
-            return false;
-
-        var tool = _visibleTools.FirstOrDefault(t => string.Equals(t.Id, toolId, StringComparison.OrdinalIgnoreCase));
-        if (tool?.Mode is not { })
+        if (!_annotationHotkeysByChord.TryGetValue((mod, vk), out var tool) || tool.Mode is null)
             return false;
 
         SetTool(tool);

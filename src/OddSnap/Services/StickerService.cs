@@ -55,6 +55,8 @@ public sealed class StickerResult
 
 public static class StickerService
 {
+    private const long MaxApiImageResponseBytes = 64L * 1024 * 1024;
+    private const long MaxApiErrorResponseBytes = 64L * 1024;
     private static readonly HttpClient Http = new()
     {
         Timeout = TimeSpan.FromSeconds(120),
@@ -209,8 +211,10 @@ public static class StickerService
     {
         try
         {
-            using var resp = await Http.SendAsync(request);
-            var bytes = await resp.Content.ReadAsByteArrayAsync();
+            using var resp = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+            var bytes = await HttpContentReader.ReadLimitedBytesAsync(
+                resp.Content,
+                resp.IsSuccessStatusCode ? MaxApiImageResponseBytes : MaxApiErrorResponseBytes).ConfigureAwait(false);
 
             if (!resp.IsSuccessStatusCode)
             {

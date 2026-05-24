@@ -19,6 +19,8 @@ public static class OcrService
 {
     public const string EngineId = "winocr-v1";
     private const int FastWorkloadMaxLongEdge = 1600;
+    private const int FullWorkloadMaxLongEdge = 6000;
+    private const long FullWorkloadMaxPixels = 12_000_000;
     private static readonly SemaphoreSlim RecognizeGate = new(1, 1);
     private static readonly object EngineCacheGate = new();
     private static readonly Dictionary<string, OcrEngine> EngineCache = new(StringComparer.OrdinalIgnoreCase);
@@ -83,8 +85,8 @@ public static class OcrService
                 if (engine == null)
                     return "";
 
-                using var fastBitmap = CreateFastWorkloadBitmap(bitmap, workload);
-                var inputBitmap = fastBitmap ?? bitmap;
+                using var workloadBitmap = CreateWorkloadBitmap(bitmap, workload);
+                var inputBitmap = workloadBitmap ?? bitmap;
 
                 // Convert GDI Bitmap to SoftwareBitmap via in-memory PNG
                 using var ms = new MemoryStream();
@@ -254,15 +256,36 @@ public static class OcrService
         return engine;
     }
 
-    private static Bitmap? CreateFastWorkloadBitmap(Bitmap bitmap, OcrWorkload workload)
+    private static Bitmap? CreateWorkloadBitmap(Bitmap bitmap, OcrWorkload workload)
     {
-        if (workload != OcrWorkload.Fast)
+        var longEdge = Math.Max(bitmap.Width, bitmap.Height);
+        if (workload == OcrWorkload.Fast)
+        {
+            return longEdge > FastWorkloadMaxLongEdge
+                ? CaptureOutputService.PrepareBitmap(bitmap, FastWorkloadMaxLongEdge)
+                : null;
+        }
+
+        var pixelCount = (long)bitmap.Width * bitmap.Height;
+        if (pixelCount <= FullWorkloadMaxPixels && longEdge <= FullWorkloadMaxLongEdge)
             return null;
 
-        var longEdge = Math.Max(bitmap.Width, bitmap.Height);
-        return longEdge > FastWorkloadMaxLongEdge
-            ? CaptureOutputService.PrepareBitmap(bitmap, FastWorkloadMaxLongEdge)
+        var pixelCappedLongEdge = CalculatePixelCappedLongEdge(bitmap.Width, bitmap.Height, FullWorkloadMaxPixels);
+        var targetLongEdge = Math.Min(FullWorkloadMaxLongEdge, pixelCappedLongEdge);
+        return targetLongEdge < longEdge
+            ? CaptureOutputService.PrepareBitmap(bitmap, targetLongEdge)
             : null;
+    }
+
+    private static int CalculatePixelCappedLongEdge(int width, int height, long maxPixels)
+    {
+        var pixelCount = (long)Math.Max(1, width) * Math.Max(1, height);
+        var longEdge = Math.Max(width, height);
+        if (pixelCount <= maxPixels)
+            return longEdge;
+
+        var scale = Math.Sqrt(maxPixels / (double)pixelCount);
+        return Math.Max(1, (int)Math.Floor(longEdge * scale));
     }
 
     private static string GetEngineCacheKey(string? languageTag)

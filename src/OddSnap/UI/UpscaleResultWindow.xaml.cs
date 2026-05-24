@@ -21,11 +21,13 @@ public partial class UpscaleResultWindow : Window
     private Bitmap? _processedBitmap;
     private string _providerName = "";
     private bool _isProcessing;
+    private bool _isClosed;
     private bool _isDraggingCompare;
     private double _compareSplit = 0.5;
     private LocalUpscaleEngine _selectedEngine;
     private UpscaleExecutionProvider _selectedExecutionProvider;
     private Rect _compareImageRect = Rect.Empty;
+    private CancellationTokenSource? _processCts;
 
     public UpscaleResultWindow(Bitmap originalBitmap, SettingsService settingsService, Action<Bitmap, string> acceptResult)
     {
@@ -145,6 +147,11 @@ public partial class UpscaleResultWindow : Window
             return;
 
         _isProcessing = true;
+        _processCts?.Cancel();
+        _processCts?.Dispose();
+        var requestCts = new CancellationTokenSource();
+        _processCts = requestCts;
+        var processToken = requestCts.Token;
         UpscaleBtn.IsEnabled = false;
         UseResultBtn.IsEnabled = false;
         AfterLoadingOverlay.Visibility = Visibility.Visible;
@@ -164,7 +171,14 @@ public partial class UpscaleResultWindow : Window
             upscaleSettings.LocalEngine = _selectedEngine;
             _settingsService.Save();
 
-            var result = await UpscaleService.ProcessAsync(_originalBitmap, upscaleSettings);
+            using var processingBitmap = new Bitmap(_originalBitmap);
+            var result = await UpscaleService.ProcessAsync(processingBitmap, upscaleSettings, processToken);
+            if (_isClosed)
+            {
+                result.Image?.Dispose();
+                return;
+            }
+
             if (!result.Success || result.Image is null)
             {
                 ShowUpscalePreviewFailed(result.Error ?? "Upscale did not return an image.");
@@ -182,22 +196,40 @@ public partial class UpscaleResultWindow : Window
         }
         catch (Exception ex)
         {
+            if (ex is OperationCanceledException && _isClosed)
+                return;
+
             AppDiagnostics.LogError("upscale.window", ex);
-            ShowUpscalePreviewFailed(ex.Message);
+            if (!_isClosed)
+                ShowUpscalePreviewFailed(ex.Message);
         }
         finally
         {
-            StopLoadingAnimation();
-            AfterLoadingOverlay.Visibility = Visibility.Collapsed;
-            CompareImageBlur.Radius = 0;
-            UpscaleBtn.IsEnabled = true;
+            if (!_isClosed)
+            {
+                StopLoadingAnimation();
+                AfterLoadingOverlay.Visibility = Visibility.Collapsed;
+                CompareImageBlur.Radius = 0;
+                UpscaleBtn.IsEnabled = true;
+                UseResultBtn.IsEnabled = _processedBitmap is not null;
+            }
+
             _isProcessing = false;
+            if (ReferenceEquals(_processCts, requestCts))
+                _processCts = null;
+            requestCts.Dispose();
         }
     }
 
     private void ShowUpscalePreviewFailed(string details)
     {
-        StatusText.Text = "Upscale failed. Try again, or check Settings -> Upscale.";
+        if (_processedBitmap is not null)
+            SetCompareMode(true);
+
+        StatusText.Text = _processedBitmap is null
+            ? "Upscale failed. Try again, or check Settings -> Upscale."
+            : "Upscale failed. Previous result is still available.";
+
         ToastWindow.ShowError(
             "Upscale failed",
             $"OddSnap could not generate the upscale preview. Try again, or check Settings -> Upscale.\n{details}");
@@ -205,11 +237,25 @@ public partial class UpscaleResultWindow : Window
 
     private void UseResultBtn_Click(object sender, RoutedEventArgs e)
     {
-        if (_processedBitmap is null)
+        if (_isClosed || _isProcessing || _processedBitmap is null)
             return;
 
-        _acceptResult(new Bitmap(_processedBitmap), _providerName);
-        Close();
+        Bitmap? accepted = null;
+        try
+        {
+            accepted = new Bitmap(_processedBitmap);
+            _acceptResult(accepted, _providerName);
+            accepted = null;
+            Close();
+        }
+        catch (Exception ex)
+        {
+            accepted?.Dispose();
+            AppDiagnostics.LogError("upscale.window.accept", ex);
+            ToastWindow.ShowError(
+                "Upscale result failed",
+                $"OddSnap could not use this upscale result. Keep the preview open and try again.\n{ex.Message}");
+        }
     }
 
     private void SetCompareMode(bool enabled)
@@ -339,6 +385,8 @@ public partial class UpscaleResultWindow : Window
             return;
 
         UpdateScaleText();
+        if (IsLoaded && !_isProcessing)
+            ClearProcessedResult();
     }
 
     private void ModelCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -355,7 +403,10 @@ public partial class UpscaleResultWindow : Window
         ScaleSlider.Minimum = minScale;
         ScaleSlider.Maximum = maxScale;
         ScaleSlider.Value = Math.Clamp(ScaleSlider.Value, minScale, maxScale);
-        StatusText.Text = "Click Upscale to generate a comparison.";
+        if (IsLoaded && !_isProcessing)
+            ClearProcessedResult();
+        else
+            StatusText.Text = "Click Upscale to generate a comparison.";
     }
 
     private void TitleBar_CloseRequested(object? sender, EventArgs e) => Close();
@@ -371,9 +422,38 @@ public partial class UpscaleResultWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        _isClosed = true;
+        var processCts = _processCts;
+        _processCts = null;
+        try { processCts?.Cancel(); } catch { }
+        if (!_isProcessing)
+            processCts?.Dispose();
         StopLoadingAnimation();
+        if (_isDraggingCompare || CompareSurface.IsMouseCaptured)
+        {
+            _isDraggingCompare = false;
+            CompareSurface.ReleaseMouseCapture();
+        }
+
+        CompareBeforeImage.Source = null;
+        CompareAfterImage.Source = null;
         _processedBitmap?.Dispose();
+        _processedBitmap = null;
         _originalBitmap.Dispose();
         base.OnClosed(e);
+    }
+
+    private void ClearProcessedResult()
+    {
+        if (_processedBitmap is not null)
+        {
+            _processedBitmap.Dispose();
+            _processedBitmap = null;
+        }
+
+        _providerName = "";
+        CompareAfterImage.Source = null;
+        UseResultBtn.IsEnabled = false;
+        SetCompareMode(false);
     }
 }

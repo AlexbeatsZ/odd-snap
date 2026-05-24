@@ -10,6 +10,7 @@ namespace OddSnap.Services;
 public static class TessdataService
 {
     private const string TessdataBaseUrl = "https://github.com/tesseract-ocr/tessdata_fast/raw/main/";
+    private const long MinTrainedDataBytes = 16L * 1024;
 
     /// <summary>All language packs available from tessdata with human-readable labels.</summary>
     public static readonly IReadOnlyList<(string Code, string Name)> AvailableLanguages = new[]
@@ -159,15 +160,26 @@ public static class TessdataService
     public static bool IsLanguageInstalled(string code)
     {
         var dir = GetTessdataDirectory();
-        return File.Exists(Path.Combine(dir, $"{code}.traineddata"));
+        return IsUsableLanguageFile(Path.Combine(dir, $"{code}.traineddata"));
     }
 
     /// <summary>Returns true if at least one OCR language model is downloaded.</summary>
     public static bool HasAnyLanguageInstalled()
     {
         var dir = GetTessdataDirectory();
-        if (!Directory.Exists(dir)) return false;
-        return Directory.EnumerateFiles(dir, "*.traineddata", SearchOption.TopDirectoryOnly).Any();
+        try
+        {
+            return Directory.Exists(dir) &&
+                Directory.EnumerateFiles(dir, "*.traineddata", SearchOption.TopDirectoryOnly).Any(IsUsableLanguageFile);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogWarning(
+                "ocr.tessdata.scan",
+                $"Failed to scan OCR language files: {ex.Message}",
+                ex);
+            return false;
+        }
     }
 
     public static async Task DownloadLanguageAsync(string code, IProgress<string>? progress = null, CancellationToken cancellationToken = default)
@@ -188,11 +200,14 @@ public static class TessdataService
             TryDeleteTessdataTempFile(tmp, "stale OCR language download");
         }
 
-        if (File.Exists(targetPath))
+        if (IsUsableLanguageFile(targetPath))
         {
             progress?.Report($"{code} already installed");
             return;
         }
+
+        if (File.Exists(targetPath))
+            TryDeleteTessdataTempFile(targetPath, "incomplete OCR language download");
 
         var url = $"{TessdataBaseUrl}{code}.traineddata";
         progress?.Report($"Downloading {code}...");
@@ -235,6 +250,18 @@ public static class TessdataService
                 "ocr.tessdata.temp-cleanup",
                 $"Failed to delete {context} temporary file {Path.GetFileName(path)}: {ex.Message}",
                 ex);
+        }
+    }
+
+    private static bool IsUsableLanguageFile(string path)
+    {
+        try
+        {
+            return File.Exists(path) && new FileInfo(path).Length >= MinTrainedDataBytes;
+        }
+        catch
+        {
+            return false;
         }
     }
 

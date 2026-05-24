@@ -50,6 +50,58 @@ public static class WindowDetector
     public static Rectangle GetWindowRectAtPoint(Point screenPoint, Rectangle virtualBounds)
         => GetDetectionRectAtPoint(screenPoint, virtualBounds, WindowDetectionMode.WindowOnly);
 
+    public static bool TryGetCapturableWindowBounds(
+        IntPtr hwnd,
+        Rectangle virtualBounds,
+        out Rectangle rect,
+        out string failureMessage)
+    {
+        rect = Rectangle.Empty;
+        failureMessage = string.Empty;
+
+        if (hwnd == IntPtr.Zero || !User32.IsWindow(hwnd))
+        {
+            failureMessage = "Couldn't find the active window. Focus a visible app window and try again.";
+            return false;
+        }
+
+        if (IsIgnoredWindowHandle(hwnd))
+        {
+            failureMessage = "OddSnap cannot capture its own capture controls. Focus another visible window and try again.";
+            return false;
+        }
+
+        if (User32.IsIconic(hwnd))
+        {
+            failureMessage = "The active window is minimized. Restore it and try active-window capture again.";
+            return false;
+        }
+
+        if (!User32.IsWindowVisible(hwnd) || Dwm.IsWindowCloaked(hwnd))
+        {
+            failureMessage = "The active window is hidden or on another desktop. Focus a visible window and try again.";
+            return false;
+        }
+
+        var hit = TryGetWindowRect(hwnd, null, virtualBounds, out rect);
+        if (hit == WindowHitResult.Snappable && rect.Width > 1 && rect.Height > 1)
+            return true;
+
+        failureMessage = "The active window is not a regular capturable window. Focus a visible app window or use region capture.";
+        return false;
+    }
+
+    public static Rectangle GetFastDetectionRectAtPoint(
+        Point screenPoint,
+        Rectangle virtualBounds,
+        WindowDetectionMode mode)
+    {
+        if (mode == WindowDetectionMode.Off)
+            return Rectangle.Empty;
+
+        return GetTopLevelWindowRectFallbackFromPoint(ToScreenPoint(screenPoint, virtualBounds), virtualBounds);
+    }
+
     public static bool TryGetSnapshotDetectionRectAtPoint(
         Point overlayPoint,
         Rectangle virtualBounds,
@@ -196,7 +248,9 @@ public static class WindowDetector
         int style = User32.GetWindowLongA(hwnd, User32.GWL_STYLE);
         int exStyle = User32.GetWindowLongA(hwnd, User32.GWL_EXSTYLE);
         string className = GetClassName(hwnd);
-        string title = GetWindowTitle(hwnd);
+        string title = NeedsWindowTitle(style, exStyle, className)
+            ? GetWindowTitle(hwnd)
+            : string.Empty;
         rect = new Rectangle(
             screenRect.Left - virtualBounds.X,
             screenRect.Top - virtualBounds.Y,
@@ -247,6 +301,23 @@ public static class WindowDetector
             return false;
 
         return true;
+    }
+
+    private static bool NeedsWindowTitle(int style, int exStyle, string className)
+    {
+        if ((style & (User32.WS_CHILD | User32.WS_DISABLED)) != 0)
+            return false;
+
+        if ((exStyle & User32.WS_EX_TRANSPARENT) != 0)
+            return false;
+
+        if ((exStyle & User32.WS_EX_APPWINDOW) != 0)
+            return false;
+
+        if ((exStyle & User32.WS_EX_NOACTIVATE) != 0 || (exStyle & User32.WS_EX_TOOLWINDOW) != 0)
+            return false;
+
+        return !IgnoredWindowClasses.Any(ignored => string.Equals(ignored, className, StringComparison.OrdinalIgnoreCase));
     }
 
     internal static bool IsPassThroughWindowCandidate(int exStyle, string className)

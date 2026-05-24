@@ -50,6 +50,16 @@ public sealed partial class RegionOverlayForm
             didWork = true;
         }
 
+        if (_captureMagnifierVisible)
+        {
+            var cursorPoint = PointToClient(System.Windows.Forms.Cursor.Position);
+            if (!ClientRectangle.Contains(cursorPoint) || !ShouldShowCaptureMagnifierAt(cursorPoint))
+            {
+                CloseCaptureMagnifier();
+            }
+            didWork = true;
+        }
+
         if (_emojiWarmupPending && _emojiPickerOpen)
         {
             WarmEmojiPickerCacheBatch();
@@ -176,6 +186,8 @@ public sealed partial class RegionOverlayForm
         _lastRenderedCapturePickerPoint = overlayPoint;
         _lastRenderedCapturePickerArgb = _lastPickedArgb;
         _capturePickerStopwatch.Restart();
+        if (!_pickerTimer.Enabled)
+            _pickerTimer.Start();
     }
 
     private void CloseMagWindow()
@@ -189,6 +201,8 @@ public sealed partial class RegionOverlayForm
         _pickerReady = false;
         _capturePickerUpdateQueued = false;
     }
+
+    private bool IsCaptureMagnifierOpen => _captureMagnifierVisible || _captureMagnifierForm is not null;
 
     private void CloseCaptureMagnifier()
     {

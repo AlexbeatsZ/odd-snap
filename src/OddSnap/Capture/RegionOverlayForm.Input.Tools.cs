@@ -14,6 +14,7 @@ public sealed partial class RegionOverlayForm
         int hitIdx = HitTestText(e.Location);
         if (hitIdx >= 0)
         {
+            CloseCaptureMagnifier();
             var ta = GetTextAnnotations()[hitIdx];
             var oldTextRect = InflateForRepaint(Rectangle.Round(MeasureTextRect(ta.Pos, ta.Text, ta.FontSize, ta.FontFamily, ta.Bold, ta.Italic, ta.Background)));
             RemoveAnnotation(ta);
@@ -169,7 +170,13 @@ public sealed partial class RegionOverlayForm
         {
             _textBtnTooltip = _hoveredTextBtn switch
             {
-                0 => "Bold", 1 => "Italic", 2 => "Stroke", 3 => "Shadow", 4 => "Background", 5 => _textFontFamily, _ => ""
+                0 => "Bold",
+                1 => "Italic",
+                2 => "Stroke",
+                3 => "Shadow",
+                4 => "Background",
+                5 => _textFontFamily,
+                _ => ""
             };
             needsRepaint = true;
         }
@@ -291,7 +298,7 @@ public sealed partial class RegionOverlayForm
 
         if (ShowCaptureMagnifier && ToolDef.IsCaptureTool(_mode) && !_isSelecting && ShouldShowCaptureMagnifierAt(e.Location))
             UpdateCaptureMagnifier(e.Location);
-        else if (_captureMagnifierForm != null && (!ShowCaptureMagnifier || !ToolDef.IsCaptureTool(_mode) || IsPointInOverlayUi(e.Location)))
+        else if (IsCaptureMagnifierOpen && (!ShowCaptureMagnifier || !ToolDef.IsCaptureTool(_mode) || IsPointInOverlayUi(e.Location)))
             CloseCaptureMagnifier();
 
         switch (_mode)
@@ -305,17 +312,17 @@ public sealed partial class RegionOverlayForm
                 if (_mode == CaptureMode.Center)
                 {
                     var oldDetect = _autoDetectRect;
+                    ResetAutoDetectUpdateQueue();
                     _autoDetectRect = Rectangle.Empty;
                     _autoDetectActive = false;
-                    _autoDetectTimer.Stop();
                     InvalidateAutoDetectChrome(oldDetect, Rectangle.Empty);
                 }
                 else if (IsPointInOverlayUi(e.Location))
                 {
                     var oldDetect = _autoDetectRect;
+                    ResetAutoDetectUpdateQueue();
                     _autoDetectRect = Rectangle.Empty;
                     _autoDetectActive = false;
-                    _autoDetectTimer.Stop();
                     InvalidateAutoDetectChrome(oldDetect, Rectangle.Empty);
                 }
                 else
@@ -441,7 +448,7 @@ public sealed partial class RegionOverlayForm
 
         if (ShowCaptureMagnifier && ShouldShowCaptureMagnifierAt(location))
             UpdateCaptureMagnifier(location);
-        else if (_captureMagnifierForm != null)
+        else if (IsCaptureMagnifierOpen)
             CloseCaptureMagnifier();
     }
 
@@ -500,8 +507,7 @@ public sealed partial class RegionOverlayForm
             return;
 
         _autoDetectActive = false;
-        if (_autoDetectTimer.Enabled)
-            _autoDetectTimer.Stop();
+        ResetAutoDetectUpdateQueue();
 
         var oldSelectionRect = _selectionRect;
         var oldSelectionCursor = _selectionEnd;
@@ -691,6 +697,7 @@ public sealed partial class RegionOverlayForm
             case CaptureMode.Upscale when _isSelecting:
                 _isSelecting = false;
                 CloseSelectionAdorner();
+                CloseCaptureMagnifier();
                 bool isCenter = _mode == CaptureMode.Center;
                 bool isOcr = _mode == CaptureMode.Ocr;
                 bool isScan = _mode == CaptureMode.Scan;
@@ -711,7 +718,7 @@ public sealed partial class RegionOverlayForm
                 {
                     if (_windowDetectionMode != WindowDetectionMode.Off)
                     {
-                        var detectedAtRelease = WindowDetector.GetDetectionRectAtPoint(
+                        var detectedAtRelease = WindowDetector.GetFastDetectionRectAtPoint(
                             e.Location, _virtualBounds, _windowDetectionMode);
                         if (detectedAtRelease.Width > 0 && detectedAtRelease.Height > 0)
                             _autoDetectRect = detectedAtRelease;
@@ -746,6 +753,7 @@ public sealed partial class RegionOverlayForm
                 break;
             case CaptureMode.Freeform when _isSelecting:
                 _isSelecting = false;
+                CloseCaptureMagnifier();
                 if (!_hasDragged)
                     RegionSelected?.Invoke(new Rectangle(0, 0, _screenshot.Width, _screenshot.Height));
                 else if (_freeformPoints.Count > 2) CompleteFreeform();
@@ -769,7 +777,7 @@ public sealed partial class RegionOverlayForm
         {
             _hoveredButton = -1;
             CloseCaptureMagnifier();
-            _autoDetectTimer.Stop();
+            ResetAutoDetectUpdateQueue();
             ClearCrosshairGuides();
             _prevCursorPos = _lastCursorPos;
             _lastCursorPos = Point.Empty;

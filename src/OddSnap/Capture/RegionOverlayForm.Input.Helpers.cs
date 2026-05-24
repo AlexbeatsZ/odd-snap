@@ -118,9 +118,67 @@ public sealed partial class RegionOverlayForm
         }
     }
 
+    private void CancelActivePointerInteraction()
+    {
+        var dirty = ComputeCurrentLivePreviewExtent();
+        if (!_lastLivePreviewPaintExtent.IsEmpty)
+            dirty = dirty.IsEmpty ? _lastLivePreviewPaintExtent : Rectangle.Union(dirty, _lastLivePreviewPaintExtent);
+
+        bool hadSelectPreview = _selectPreviewAnnotation is not null || _renderSkipIndex >= 0;
+
+        ResetSelectionDragMoveQueue();
+        _isSelecting = false;
+        _hasSelection = false;
+        _hasDragged = false;
+        _selectionRect = Rectangle.Empty;
+        _lastSelectionRect = Rectangle.Empty;
+        _selectionEnd = Point.Empty;
+        _freeformPoints.Clear();
+
+        _isBlurring = false;
+        _isHighlighting = false;
+        _isRectShapeDragging = false;
+        _isCircleShapeDragging = false;
+        _isArrowDragging = false;
+        _isLineDragging = false;
+        _isRulerDragging = false;
+        _isCurvedArrowDragging = false;
+        _isEraserDragging = false;
+        _currentStroke = null;
+        _currentCurvedArrow = null;
+
+        _textSelecting = false;
+        _textDragging = false;
+        _textResizing = false;
+        _textResizeHandle = -1;
+        _lastTextDragLocation = Point.Empty;
+        _lastTextDragFrameUtc = default;
+
+        _isSelectDragging = false;
+        _isSelectResizing = false;
+        _selectResizeHandle = -1;
+        _selectPreviewAnnotation = null;
+        _selectResizeOriginalAnnotation = null;
+        _renderSkipIndex = -1;
+
+        _lastLivePreviewPaintExtent = Rectangle.Empty;
+        SetSnapGuides(false, false);
+        CloseMagWindow();
+        CloseCaptureMagnifier();
+        CloseSelectionAdorner();
+        ClearCrosshairGuides();
+
+        if (hadSelectPreview)
+            MarkCommittedAnnotationsDirty();
+
+        if (!dirty.IsEmpty && !IsDisposed && !Disposing)
+            Invalidate(dirty);
+    }
+
     private void SetMode(CaptureMode m, string? toolId = null)
     {
         if (_isTyping) CommitText();
+        CancelActivePointerInteraction();
         bool wasEmoji = _mode == CaptureMode.Emoji && _emojiPickerOpen;
         if (_flyoutOpen)
             CloseMoreToolsDropdown();
@@ -135,25 +193,6 @@ public sealed partial class RegionOverlayForm
         _selectionRect = Rectangle.Empty;
         _lastSelectionRect = Rectangle.Empty;
         _freeformPoints.Clear();
-        _isSelecting = false;
-        _isBlurring = false;
-        _isHighlighting = false;
-        _isRectShapeDragging = false;
-        _isCircleShapeDragging = false;
-        _isArrowDragging = false;
-        _isLineDragging = false;
-        _isRulerDragging = false;
-        _isCurvedArrowDragging = false;
-        _isEraserDragging = false;
-        if (_isSelectDragging || _isSelectResizing || _renderSkipIndex >= 0)
-        {
-            _isSelectDragging = false;
-            _isSelectResizing = false;
-            _selectPreviewAnnotation = null;
-            _selectResizeOriginalAnnotation = null;
-            _renderSkipIndex = -1;
-            MarkCommittedAnnotationsDirty();
-        }
         _autoDetectActive = false;
         _autoDetectRect = Rectangle.Empty;
         _lastAutoDetectRect = Rectangle.Empty;

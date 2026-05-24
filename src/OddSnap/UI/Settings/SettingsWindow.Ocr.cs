@@ -729,24 +729,42 @@ public partial class SettingsWindow
 
     private void OcrCombo_PreviewTextInput(object sender, TextCompositionEventArgs e)
     {
+        if (_isClosed)
+            return;
+
         if (sender is not ComboBox combo) return;
         combo.IsDropDownOpen = true;
-        Dispatcher.BeginInvoke(new Action(() => FilterSettingsComboItems(combo)),
-            System.Windows.Threading.DispatcherPriority.Background);
+        QueueSettingsComboFilter(combo);
     }
 
     private void OcrCombo_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
+        if (_isClosed)
+            return;
+
         if (e.Key == Key.Back || e.Key == Key.Delete)
         {
             if (sender is ComboBox combo)
-                Dispatcher.BeginInvoke(new Action(() => FilterSettingsComboItems(combo)),
-                    System.Windows.Threading.DispatcherPriority.Background);
+                QueueSettingsComboFilter(combo);
         }
+    }
+
+    private void QueueSettingsComboFilter(ComboBox combo)
+    {
+        _ = TryPostToSettingsDispatcher(() =>
+        {
+            if (_isClosed || !IsLoaded || !combo.IsLoaded)
+                return;
+
+            FilterSettingsComboItems(combo);
+        }, System.Windows.Threading.DispatcherPriority.Background, "settings.ocr-combo-filter-post");
     }
 
     private void FilterSettingsComboItems(ComboBox combo)
     {
+        if (_isClosed || !IsLoaded || !combo.IsLoaded)
+            return;
+
         var editText = combo.Text?.Trim() ?? "";
 
         List<ComboBoxItem>? allItems = null;

@@ -45,9 +45,9 @@ public sealed partial class RegionOverlayForm
         if (button < _mainBarTools.Length)
         {
             var tool = _mainBarTools[button];
-            var hotkey = Services.SettingsService.LoadStatic()?.GetToolHotkey(tool.Id) ?? (0u, 0u);
-            if (hotkey.key != 0)
-                text += $"  ({HotkeyFormatter.Format(hotkey.mod, hotkey.key)})";
+            var hotkey = GetCachedToolHotkey(tool.Id);
+            if (hotkey.Key != 0)
+                text += $"  ({HotkeyFormatter.Format(hotkey.Modifiers, hotkey.Key)})";
         }
 
         return text;

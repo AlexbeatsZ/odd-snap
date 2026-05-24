@@ -1,8 +1,13 @@
-# OddSnap v0.8.40
+# OddSnap v0.8.41
 
 ## Changed
-- encode MP4/MKV recordings with OBS-style x264 settings: CRF 18, High profile, 2-second keyframes, and no zerolatency tune.
-- sharpen scaled video recordings with Lanczos filtering.
+- default video recordings to 60 FPS and relabel recording quality as recording resolution.
+- encode MP4/MKV/WebM recordings with sharper defaults while preserving native capture pixels unless a resolution cap is selected.
+- keep recording controls visible in capture-excluded overlay windows instead of hiding them during full-screen recording.
+- speed up window detection outlines and active-window capture by validating window bounds before full-screen bitmap capture.
 
 ## Fixed
-- find FFmpeg from common local WinGet, Scoop, Chocolatey, and app-folder installs instead of caching a missing encoder result.
+- close the capture magnifier when switching tools, interacting with overlay controls, or leaving capture content.
+- exclude OddSnap recording chrome from video and GIF frames without moving controls under the taskbar or off-screen.
+- pad odd-sized video frames instead of downscaling them to encoder-safe even dimensions.
+- harden capture, settings, upload, and background runtime paths against stale dispatchers, failed saves, and oversized HTTP responses.

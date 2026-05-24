@@ -261,6 +261,8 @@ internal sealed class LiveSelectionAdornerForm : Form
     {
         if (disposing)
         {
+            if (IsHandleCreated)
+                CaptureWindowExclusion.Unregister(Handle);
             _renderTimer.Dispose();
             _surfaceGraphics?.Dispose();
             _surface?.Dispose();

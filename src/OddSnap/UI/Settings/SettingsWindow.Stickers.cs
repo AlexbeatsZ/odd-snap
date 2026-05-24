@@ -353,7 +353,7 @@ public partial class SettingsWindow
 
     private void StickerOpenLocalEngineRepoBtn_Click(object sender, RoutedEventArgs e)
     {
-        if (_stickerProjectOpenInProgress)
+        if (_isClosed || _stickerProjectOpenInProgress)
             return;
 
         _stickerProjectOpenInProgress = true;
@@ -416,19 +416,16 @@ public partial class SettingsWindow
 
     private void ResetStickerProjectOpenGuardAfterCooldown()
     {
-        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(LocalEngineProjectOpenCooldownMs) };
-        timer.Tick += (_, _) =>
+        RunAfterSettingsCooldown(LocalEngineProjectOpenCooldownMs, () =>
         {
-            timer.Stop();
             _stickerProjectOpenInProgress = false;
             UpdateLocalEngineUi();
-        };
-        timer.Start();
+        });
     }
 
     private void StickerRemoveAllModelsBtn_Click(object sender, RoutedEventArgs e)
     {
-        if (_stickerModelRemovalInProgress)
+        if (_isClosed || _stickerModelRemovalInProgress)
             return;
 
         if (!ThemedConfirmDialog.Confirm(
@@ -455,7 +452,7 @@ public partial class SettingsWindow
 
     private void RunStickerModelRemoval(Action removeAction)
     {
-        if (_stickerModelRemovalInProgress)
+        if (_isClosed || _stickerModelRemovalInProgress)
             return;
 
         _stickerModelRemovalInProgress = true;
@@ -480,6 +477,9 @@ public partial class SettingsWindow
 
     private void SetStickerRemovalStatus(string message)
     {
+        if (_isClosed)
+            return;
+
         StickerLocalEngineProgress.Visibility = Visibility.Collapsed;
         StickerLocalEngineProgress.IsIndeterminate = false;
         StickerLocalEngineProgress.Value = 0;
@@ -501,14 +501,11 @@ public partial class SettingsWindow
 
     private void ResetStickerModelRemovalGuardAfterCooldown()
     {
-        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(LocalEngineProjectOpenCooldownMs) };
-        timer.Tick += (_, _) =>
+        RunAfterSettingsCooldown(LocalEngineProjectOpenCooldownMs, () =>
         {
-            timer.Stop();
             _stickerModelRemovalInProgress = false;
             UpdateLocalEngineUi();
-        };
-        timer.Start();
+        });
     }
 
     private void StickerCopyErrorBtn_Click(object sender, RoutedEventArgs e)

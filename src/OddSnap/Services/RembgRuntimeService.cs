@@ -6,6 +6,7 @@ namespace OddSnap.Services;
 public static class RembgRuntimeService
 {
     private const int RuntimeLayoutVersion = 4;
+    private const long MinModelFileBytes = 1L * 1024 * 1024;
     private const string PipPackage = "pip==26.1";
     private const string SetuptoolsPackage = "setuptools==82.0.1";
     private const string WheelPackage = "wheel==0.47.0";
@@ -222,8 +223,12 @@ public static class RembgRuntimeService
         await EnsureInstalledAsync(provider, progress, cancellationToken).ConfigureAwait(false);
 
         var modelPath = GetModelPath(engine);
-        if (File.Exists(modelPath))
+        if (IsUsableModelFile(modelPath))
             return;
+
+        var preferredModelPath = GetPreferredModelPath(engine);
+        if (File.Exists(preferredModelPath) && !IsUsableModelFile(preferredModelPath))
+            TryDeleteRuntimeTempFile(preferredModelPath, "incomplete sticker model");
 
         progress?.Report($"Preparing {LocalStickerEngineService.GetEngineLabel(engine)}...");
         var result = await RunRuntimePythonAsync(provider, new[]
@@ -236,7 +241,7 @@ public static class RembgRuntimeService
         if (result.ExitCode != 0)
             throw new InvalidOperationException(ProcessRunner.GetFailureMessage(result, "Couldn't prepare the sticker model."));
 
-        if (!File.Exists(modelPath))
+        if (!IsUsableModelFile(GetPreferredModelPath(engine)))
             throw new InvalidOperationException("The sticker model did not finish downloading.");
     }
 
@@ -425,11 +430,23 @@ public static class RembgRuntimeService
     {
         foreach (var path in GetCandidateModelPaths(engine))
         {
-            if (File.Exists(path))
+            if (IsUsableModelFile(path))
                 return path;
         }
 
         return null;
+    }
+
+    private static bool IsUsableModelFile(string path)
+    {
+        try
+        {
+            return File.Exists(path) && new FileInfo(path).Length >= MinModelFileBytes;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static IEnumerable<string> GetCandidateModelPaths(LocalStickerEngine engine)

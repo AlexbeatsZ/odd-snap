@@ -30,6 +30,8 @@ public partial class SettingsWindow
 
     internal static void TrimThumbCache(int keepCount) => SettingsMediaCache.Trim(keepCount);
 
+    internal static void CancelThumbWarmup() => SettingsMediaCache.CancelWarmup();
+
     internal static void WarmRecentHistoryThumbs(IEnumerable<HistoryEntry> entries, int maxCount = 24)
     {
         foreach (var entry in entries

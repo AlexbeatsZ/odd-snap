@@ -20,23 +20,28 @@ internal static class CaptureOverlayThread
         ArgumentNullException.ThrowIfNull(action);
 
         var invoker = EnsureInvoker();
-        try
-        {
-            invoker.BeginInvoke(new Action(() => InvokeAction(action)));
-        }
-        catch (InvalidOperationException)
+        if (TryPost(invoker, action))
+            return;
+
+        ResetInvoker(invoker);
+        invoker = EnsureInvoker();
+        if (!TryPost(invoker, action))
         {
             ResetInvoker(invoker);
-            EnsureInvoker().BeginInvoke(new Action(() => InvokeAction(action)));
+            throw new InvalidOperationException("Capture overlay thread is not accepting work.");
         }
     }
 
     public static void Stop()
     {
         Control? invoker;
+        Thread? thread;
+        ManualResetEventSlim? ready;
         lock (Sync)
         {
             invoker = _invoker;
+            thread = _thread;
+            ready = _ready;
             _invoker = null;
             _thread = null;
             _ready = null;
@@ -44,10 +49,17 @@ internal static class CaptureOverlayThread
 
         try
         {
-            if (invoker is { IsDisposed: false })
-                invoker.BeginInvoke(new Action(System.Windows.Forms.Application.ExitThread));
+            if (invoker is { IsDisposed: false, IsHandleCreated: true } usableInvoker)
+                usableInvoker.BeginInvoke(new Action(System.Windows.Forms.Application.ExitThread));
         }
         catch { }
+
+        if (thread is not null && thread != Thread.CurrentThread)
+        {
+            try { thread.Join(1500); } catch { }
+        }
+
+        try { ready?.Dispose(); } catch { }
     }
 
     private static Control EnsureInvoker()
@@ -55,18 +67,25 @@ internal static class CaptureOverlayThread
         ManualResetEventSlim ready;
         lock (Sync)
         {
-            if (_invoker is { IsDisposed: false })
-                return _invoker;
+            if (_invoker is { IsDisposed: false, IsHandleCreated: true } existingInvoker)
+                return existingInvoker;
 
-            ready = new ManualResetEventSlim(false);
-            _ready = ready;
-            _thread = new Thread(ThreadMain)
+            if (_thread is { IsAlive: true } && _ready is { IsSet: false } pendingReady)
             {
-                IsBackground = true,
-                Name = "OddSnap capture overlay"
-            };
-            _thread.SetApartmentState(ApartmentState.STA);
-            _thread.Start(ready);
+                ready = pendingReady;
+            }
+            else
+            {
+                ready = new ManualResetEventSlim(false);
+                _ready = ready;
+                _thread = new Thread(ThreadMain)
+                {
+                    IsBackground = true,
+                    Name = "OddSnap capture overlay"
+                };
+                _thread.SetApartmentState(ApartmentState.STA);
+                _thread.Start(ready);
+            }
         }
 
         if (!ready.Wait(TimeSpan.FromSeconds(3)))
@@ -74,8 +93,14 @@ internal static class CaptureOverlayThread
 
         lock (Sync)
         {
-            if (_invoker is { IsDisposed: false })
-                return _invoker;
+            if (_invoker is { IsDisposed: false, IsHandleCreated: true } existingInvoker)
+                return existingInvoker;
+
+            if (ReferenceEquals(_ready, ready))
+            {
+                _thread = null;
+                _ready = null;
+            }
         }
 
         throw new InvalidOperationException("Capture overlay thread did not initialize.");
@@ -87,12 +112,17 @@ internal static class CaptureOverlayThread
         using var invoker = new Control();
         _ = invoker.Handle;
 
+        bool isCurrentThread;
         lock (Sync)
         {
-            _invoker = invoker;
+            isCurrentThread = ReferenceEquals(_ready, ready);
+            if (isCurrentThread)
+                _invoker = invoker;
         }
 
         ready.Set();
+        if (!isCurrentThread)
+            return;
 
         try
         {
@@ -104,6 +134,10 @@ internal static class CaptureOverlayThread
             {
                 if (ReferenceEquals(_invoker, invoker))
                     _invoker = null;
+                if (ReferenceEquals(_ready, ready))
+                    _ready = null;
+                if (ReferenceEquals(_thread, Thread.CurrentThread))
+                    _thread = null;
             }
         }
     }
@@ -125,9 +159,30 @@ internal static class CaptureOverlayThread
         lock (Sync)
         {
             if (ReferenceEquals(_invoker, invoker))
+            {
                 _invoker = null;
-            _thread = null;
-            _ready = null;
+                _thread = null;
+                _ready = null;
+            }
         }
     }
+
+    private static bool TryPost(Control invoker, Action action)
+    {
+        if (!IsInvokerUsable(invoker))
+            return false;
+
+        try
+        {
+            invoker.BeginInvoke(new Action(() => InvokeAction(action)));
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsInvokerUsable(Control? invoker) =>
+        invoker is { IsDisposed: false, IsHandleCreated: true };
 }

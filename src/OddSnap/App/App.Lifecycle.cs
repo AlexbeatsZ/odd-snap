@@ -23,11 +23,14 @@ public partial class App
 
     private void ShowSettings(bool openHistory = false)
     {
+        if (Volatile.Read(ref _isShuttingDown) != 0)
+            return;
+
         if (_settingsWindow is { IsVisible: true })
         {
             if (openHistory)
                 _settingsWindow.OpenHistoryFromTray();
-            _settingsWindow.Activate();
+            RestoreAndActivateSettingsWindow(_settingsWindow);
             return;
         }
 
@@ -41,15 +44,24 @@ public partial class App
         {
             try
             {
+                if (Volatile.Read(ref _isShuttingDown) != 0)
+                {
+                    Interlocked.Exchange(ref _settingsWindowOpening, 0);
+                    return;
+                }
+
                 var historyService = EnsureHistoryService();
                 var imageSearchIndexService = EnsureImageSearchIndexService();
-                _ = Dispatcher.BeginInvoke(() =>
+                if (!TryPostToAppDispatcher(() =>
                 {
                     try
                     {
+                        if (Volatile.Read(ref _isShuttingDown) != 0)
+                            return;
+
                         if (_settingsWindow is { IsVisible: true })
                         {
-                            _settingsWindow.Activate();
+                            RestoreAndActivateSettingsWindow(_settingsWindow);
                             return;
                         }
 
@@ -65,16 +77,23 @@ public partial class App
                     {
                         Interlocked.Exchange(ref _settingsWindowOpening, 0);
                     }
-                }, DispatcherPriority.Background);
+                }, DispatcherPriority.Background, "lifecycle.show-settings-post"))
+                {
+                    Interlocked.Exchange(ref _settingsWindowOpening, 0);
+                }
             }
             catch (Exception ex)
             {
-                _ = Dispatcher.BeginInvoke(() =>
+                if (!TryPostToAppDispatcher(() =>
                 {
                     _settingsWindow = null;
                     ShowSettingsOpenFailed(ex, "lifecycle.show-settings.init", "lifecycle.show-settings.init.toast");
                     Interlocked.Exchange(ref _settingsWindowOpening, 0);
-                }, DispatcherPriority.Background);
+                }, DispatcherPriority.Background, "lifecycle.show-settings-init-failed-post"))
+                {
+                    AppDiagnostics.LogError("lifecycle.show-settings.init", ex);
+                    Interlocked.Exchange(ref _settingsWindowOpening, 0);
+                }
             }
         });
     }
@@ -122,6 +141,33 @@ public partial class App
         ShowSettings(openHistory: true);
     }
 
+    private static void RestoreAndActivateSettingsWindow(SettingsWindow window)
+    {
+        if (window.WindowState == WindowState.Minimized)
+            window.WindowState = WindowState.Normal;
+
+        window.Activate();
+    }
+
+    private void HandleSingleInstanceActivation(SingleInstanceActivationRequest request)
+    {
+        if (Volatile.Read(ref _isShuttingDown) != 0)
+            return;
+
+        _ = TryPostToAppDispatcher(() =>
+        {
+            if (_settingsService is null || Volatile.Read(ref _isShuttingDown) != 0)
+                return;
+
+            switch (request)
+            {
+                case SingleInstanceActivationRequest.OpenSettings:
+                    ShowSettings();
+                    break;
+            }
+        }, DispatcherPriority.Normal, "lifecycle.single-instance-post");
+    }
+
     private void ApplyRuntimeSettings()
     {
         ScreenCapture.HdrCaptureCompatibleMode = _settingsService!.Settings.HdrCaptureCompatibleMode;
@@ -131,7 +177,7 @@ public partial class App
 
     private void BeginUninstall()
     {
-        Dispatcher.BeginInvoke(() =>
+        _ = TryPostToAppDispatcher(() =>
         {
             if (!ThemedConfirmDialog.Confirm(
                     _settingsWindow,
@@ -153,7 +199,7 @@ public partial class App
 
             ToastWindow.Show("Uninstalling", "OddSnap will close and remove its files.");
             Shutdown();
-        });
+        }, DispatcherPriority.Normal, "lifecycle.begin-uninstall-post");
     }
 
     private async Task CheckForUpdatesOnStartupAsync()
@@ -168,7 +214,10 @@ public partial class App
                 ? $"{result.LatestVersionLabel} is available on GitHub Releases."
                 : $"{result.LatestVersionLabel} is ready: {result.AssetName}";
 
-            _ = Dispatcher.BeginInvoke(() => ToastWindow.Show("Update available", detail));
+            _ = TryPostToAppDispatcher(
+                () => ToastWindow.Show("Update available", detail),
+                DispatcherPriority.Background,
+                "lifecycle.update-available-post");
         }
         catch
         {
@@ -218,6 +267,9 @@ public partial class App
 
     private void QueueHistoryMaintenance()
     {
+        if (Volatile.Read(ref _isShuttingDown) != 0)
+            return;
+
         HistoryService historyService;
         ImageSearchIndexService? imageSearchIndexService;
         string saveDirectory;
@@ -280,6 +332,9 @@ public partial class App
 
     private void QueueImageSearchIndexRefresh()
     {
+        if (Volatile.Read(ref _isShuttingDown) != 0)
+            return;
+
         if (Interlocked.Exchange(ref _historyIndexRefreshScheduled, 1) != 0)
             return;
 
@@ -322,7 +377,7 @@ public partial class App
 
     private void ScheduleIdleMemoryTrim()
     {
-        if (_idleTrimTimer is null)
+        if (_idleTrimTimer is null || Volatile.Read(ref _isShuttingDown) != 0)
             return;
 
         _idleTrimTimer.Stop();
@@ -332,6 +387,9 @@ public partial class App
     private void TrimIdleMemory()
     {
         _idleTrimTimer?.Stop();
+
+        if (Volatile.Read(ref _isShuttingDown) != 0)
+            return;
 
         if (_isCapturing != 0 || Volatile.Read(ref _activeUploadCount) > 0)
         {

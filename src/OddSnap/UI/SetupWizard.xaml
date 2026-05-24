@@ -27,6 +27,7 @@
             <Setter Property="Padding" Value="24,10"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="MinWidth" Value="100"/>
+            <Setter Property="MinHeight" Value="40"/>
         </Style>
         <Style x:Key="WizBtnPrimary" TargetType="Button" BasedOn="{StaticResource WizBtn}">
             <Setter Property="Background" Value="{DynamicResource WizBtnPrimaryBg}"/>
@@ -64,15 +65,19 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <Button Content="X"
-                Width="32" Height="32" MinWidth="32"
+        <Button Content="×"
+                Width="40" Height="40" MinWidth="40"
                 Padding="0"
-                Margin="0,10,10,0"
+                Margin="0,8,8,0"
                 HorizontalAlignment="Right"
                 VerticalAlignment="Top"
                 Panel.ZIndex="10"
                 FontSize="16"
+                FontFamily="Segoe UI Symbol"
                 Style="{StaticResource WizBtnSecondary}"
+                ToolTip="Skip setup"
+                AutomationProperties.Name="Skip setup"
+                AutomationProperties.HelpText="Skip setup and keep OddSnap running in the system tray."
                 Click="Skip_Click"/>
 
         <Grid x:Name="Page1" Grid.Row="0" Margin="36,28,36,0">
@@ -147,7 +152,7 @@
                                            Foreground="{DynamicResource WizFgMuted}" Margin="0,2,0,0" TextTrimming="CharacterEllipsis" MaxWidth="320"/>
                             </StackPanel>
                             <Button Grid.Column="1" Content="Browse" Style="{StaticResource WizBtnSecondary}"
-                                    Padding="12,6" MinWidth="0" FontSize="11" Click="BrowseSaveDir_Click"/>
+                                    Padding="14,6" MinWidth="72" FontSize="11" Click="BrowseSaveDir_Click"/>
                         </Grid>
                     </Border>
                 </StackPanel>

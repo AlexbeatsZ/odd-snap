@@ -70,6 +70,11 @@ public sealed class UploadResult
 /// </summary>
 public static partial class UploadService
 {
+    private const long MaxUploadTextResponseBytes = 1L * 1024 * 1024;
+    private const long MaxUploadErrorResponseBytes = 64L * 1024;
+    private const int TemporaryHostsTotalUploadTimeoutSeconds = 90;
+    private const int TemporaryHostUploadTimeoutSeconds = 25;
+
     private static readonly HttpClient Http = new()
     {
         Timeout = TimeSpan.FromSeconds(120),
@@ -132,6 +137,30 @@ public static partial class UploadService
         var content = new StreamContent(stream);
         content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
         return content;
+    }
+
+    private static Task<HttpResponseMessage> SendUploadRequestAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        return Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+    }
+
+    private static async Task<HttpResponseMessage> PostUploadContentAsync(string requestUri, HttpContent content, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, requestUri)
+        {
+            Content = content
+        };
+        return await SendUploadRequestAsync(request, cancellationToken);
+    }
+
+    private static Task<string> ReadUploadResponseTextAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken)
+    {
+        var limit = response.IsSuccessStatusCode
+            ? MaxUploadTextResponseBytes
+            : MaxUploadErrorResponseBytes;
+        return HttpContentReader.ReadLimitedStringAsync(response.Content, limit, cancellationToken);
     }
 
     /// <summary>Human-readable name for a destination.</summary>
@@ -391,10 +420,24 @@ public static partial class UploadService
     private static async Task<UploadResult> UploadTemporaryHostsAsync(string filePath, UploadSettings settings, CancellationToken cancellationToken)
     {
         var errors = new List<string>();
+        using var totalTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        totalTimeout.CancelAfter(TimeSpan.FromSeconds(TemporaryHostsTotalUploadTimeoutSeconds));
+
         foreach (var destination in TemporaryHostFallbacks)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var result = await UploadAsync(filePath, destination, settings, cancellationToken);
+            if (totalTimeout.IsCancellationRequested)
+            {
+                errors.Add(BuildTemporaryHostsTotalTimeoutMessage());
+                break;
+            }
+
+            using var hostTimeout = CancellationTokenSource.CreateLinkedTokenSource(totalTimeout.Token);
+            hostTimeout.CancelAfter(TimeSpan.FromSeconds(TemporaryHostUploadTimeoutSeconds));
+
+            var result = await UploadAsync(filePath, destination, settings, hostTimeout.Token);
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (result.Success)
             {
                 return new UploadResult
@@ -406,6 +449,17 @@ public static partial class UploadService
                 };
             }
 
+            if (hostTimeout.IsCancellationRequested)
+            {
+                errors.Add(totalTimeout.IsCancellationRequested
+                    ? BuildTemporaryHostsTotalTimeoutMessage()
+                    : $"{GetName(destination)}: timed out after {TemporaryHostUploadTimeoutSeconds} seconds.");
+
+                if (totalTimeout.IsCancellationRequested)
+                    break;
+                continue;
+            }
+
             errors.Add($"{GetName(destination)}: {result.Error}");
         }
 
@@ -415,6 +469,9 @@ public static partial class UploadService
         };
     }
 
+    private static string BuildTemporaryHostsTotalTimeoutMessage()
+        => $"Temp Hosts timed out after {TemporaryHostsTotalUploadTimeoutSeconds} seconds. Check your connection or choose a specific upload destination in Settings -> Uploads.";
+
     public static async Task<UploadResult> UploadAsync(
         string filePath, UploadDestination dest, UploadSettings settings, CancellationToken cancellationToken = default)
     {
@@ -422,8 +479,24 @@ public static partial class UploadService
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            {
+                return new UploadResult
+                {
+                    Error = "The file to upload is missing. Save the capture again or choose an existing file."
+                };
+            }
+
             // Check file size limit
             var fileSize = new FileInfo(filePath).Length;
+            if (fileSize <= 0)
+            {
+                return new UploadResult
+                {
+                    Error = "The file to upload is empty. Save the capture again and retry."
+                };
+            }
+
             var maxSize = GetMaxSize(dest, filePath);
             if (fileSize > maxSize)
             {
@@ -435,6 +508,16 @@ public static partial class UploadService
 
             if (IsAiChatDestination(dest))
                 return new UploadResult { Error = "AI Redirects uses browser redirects instead of host upload." };
+
+            var configurationError = GetConfigurationError(dest, settings);
+            if (!string.IsNullOrWhiteSpace(configurationError))
+            {
+                return new UploadResult
+                {
+                    Error = configurationError,
+                    ProviderName = GetName(dest)
+                };
+            }
 
             var transportSecurityError = ValidateTransportSecurity(dest, settings);
             if (!string.IsNullOrWhiteSpace(transportSecurityError))
@@ -487,13 +570,31 @@ public static partial class UploadService
         }
         catch (Exception ex)
         {
+            var errorMessage = BuildUploadExceptionMessage(dest, ex);
             AppDiagnostics.LogError("upload.error", ex, $"{GetName(dest)} upload failed for {Path.GetFileName(filePath)}.");
             PerformanceTrace.LogElapsed(
                 "perf.upload",
                 uploadStarted,
                 $"{GetName(dest)} failed file={Path.GetFileName(filePath)}");
-            return new UploadResult { Error = ex.Message };
+            return new UploadResult { Error = errorMessage };
         }
+    }
+
+    private static string BuildUploadExceptionMessage(UploadDestination dest, Exception ex)
+    {
+        var provider = GetName(dest);
+        provider = string.IsNullOrWhiteSpace(provider) ? "Upload provider" : provider;
+
+        return ex switch
+        {
+            TaskCanceledException => $"{provider} upload timed out. Check your connection and try again.",
+            HttpRequestException => $"{provider} could not be reached. Check your connection and try again.",
+            FileNotFoundException => "The file to upload is missing. Save the capture again or choose an existing file.",
+            DirectoryNotFoundException => "The upload file folder no longer exists. Save the capture again or choose another folder.",
+            IOException => "OddSnap could not read the file for upload. Make sure it is not locked by another app and retry.",
+            UnauthorizedAccessException => "OddSnap does not have permission to read the file for upload.",
+            _ => string.IsNullOrWhiteSpace(ex.Message) ? $"{provider} upload failed." : ex.Message
+        };
     }
 
     private static void LogUploadFailure(UploadDestination dest, string filePath, string error)

@@ -16,30 +16,15 @@ public partial class App
     {
         var settings = _settingsService!.Settings;
         var ext = CaptureOutputService.GetExtension(settings.CaptureImageFormat);
-        string? requestedPath = null;
-        if (settings.SaveToFile)
+        if (!TryResolveCaptureOutputPath(
+                () => $"{Helpers.FileNameTemplate.Format(settings.FileNameTemplate, result.Width, result.Height)}.{ext}",
+                settings.CaptureImageFormat,
+                "Capture error",
+                "OddSnap could not prepare the capture save path. Choose another save folder in Settings and try again.",
+                out var requestedPath))
         {
-            var defaultPath = Helpers.CaptureSavePath.BuildAvailablePath(
-                settings.SaveDirectory,
-                $"{Helpers.FileNameTemplate.Format(settings.FileNameTemplate, result.Width, result.Height)}.{ext}",
-                settings.SaveInMonthlyFolders);
-            if (settings.AskForFileNameOnSave)
-            {
-                // SaveFileDialog must run on the WPF dispatcher thread
-                string? resolved = null;
-                Dispatcher.Invoke(() => resolved = ResolveSavePath(defaultPath, settings.CaptureImageFormat));
-                requestedPath = resolved;
-            }
-            else
-            {
-                requestedPath = defaultPath;
-            }
-            if (requestedPath is null)
-            {
-                result.Dispose();
-                ResetCapturing();
-                return;
-            }
+            result.Dispose();
+            return;
         }
 
         _ = PersistCaptureAsync(result, requestedPath, saveHistory: settings.SaveHistory, isSticker: false, providerName: null)
@@ -47,24 +32,32 @@ public partial class App
             {
                 if (task.IsFaulted)
                 {
-                    Dispatcher.BeginInvoke(() =>
+                    var error = task.Exception?.GetBaseException();
+                    if (!TryPostToAppDispatcher(() =>
                     {
                         ResetCapturing();
                         ShowCaptureProcessingFailed(
                             "Capture error",
                             "OddSnap could not finish the capture result. Try again, or choose another save folder in Settings.",
-                            task.Exception?.GetBaseException().Message ?? "Capture failed");
+                            error?.Message ?? "Capture failed");
                         ScheduleIdleMemoryTrim();
-                    });
+                    }, DispatcherPriority.Normal, "capture.result-failed-post"))
+                    {
+                        if (error is not null)
+                            AppDiagnostics.LogError("capture.result-failed", error);
+                        ResetCapturingWithoutUiRestore();
+                    }
                     return;
                 }
 
                 var persisted = task.Result;
-                Dispatcher.BeginInvoke(() =>
+                var action = NormalizeAfterCaptureAction(settings.AfterCapture);
+                var copyRequested = ShouldCopyAfterCapture(action);
+                var clipboardPayload = PrepareCaptureClipboardPayload(persisted.Output, persisted.FilePath, copyRequested, out var clipboardPrepareError);
+                if (!TryPostToAppDispatcher(() =>
                 {
-                    var action = NormalizeAfterCaptureAction(settings.AfterCapture);
-                    if (ShouldCopyAfterCapture(action))
-                        TryCopyCaptureOutputToClipboard(persisted.Output);
+                    if (copyRequested)
+                        TryCopyCaptureOutputToClipboard(persisted.Output, persisted.FilePath, clipboardPayload, clipboardPrepareError);
                     ResetCapturing();
 
                     bool willAiRedirect = useAiRedirect && persisted.FilePath != null;
@@ -98,29 +91,26 @@ public partial class App
                     }
 
                     ScheduleIdleMemoryTrim();
-                });
+                }, DispatcherPriority.Normal, "capture.result-complete-post"))
+                {
+                    persisted.Output.Dispose();
+                    ResetCapturingWithoutUiRestore();
+                }
             }, TaskScheduler.Default);
     }
 
     private void HandleStickerResult(Bitmap result, string providerName)
     {
         var settings = _settingsService!.Settings;
-        string? requestedPath = null;
-        if (settings.SaveToFile)
+        if (!TryResolveCaptureOutputPath(
+                () => $"{Helpers.FileNameTemplate.Format(settings.FileNameTemplate, result.Width, result.Height)}_sticker.png",
+                CaptureImageFormat.Png,
+                "Sticker error",
+                "OddSnap could not prepare the sticker save path. Choose another save folder in Settings and try again.",
+                out var requestedPath))
         {
-            var defaultStickerPath = Helpers.CaptureSavePath.BuildAvailablePath(
-                settings.SaveDirectory,
-                $"{Helpers.FileNameTemplate.Format(settings.FileNameTemplate, result.Width, result.Height)}_sticker.png",
-                settings.SaveInMonthlyFolders);
-            requestedPath = settings.AskForFileNameOnSave
-                ? ResolveSavePath(defaultStickerPath, CaptureImageFormat.Png)
-                : defaultStickerPath;
-            if (requestedPath is null)
-            {
-                result.Dispose();
-                ResetCapturing();
-                return;
-            }
+            result.Dispose();
+            return;
         }
 
         _ = PersistCaptureAsync(result, requestedPath, saveHistory: settings.SaveHistory, isSticker: true, providerName: providerName)
@@ -128,24 +118,31 @@ public partial class App
             {
                 if (task.IsFaulted)
                 {
-                    Dispatcher.BeginInvoke(() =>
+                    var error = task.Exception?.GetBaseException();
+                    if (!TryPostToAppDispatcher(() =>
                     {
                         ResetCapturing();
                         ShowCaptureProcessingFailed(
                             "Sticker error",
                             "OddSnap could not finish the sticker result. Try again, or check Settings -> Stickers.",
-                            task.Exception?.GetBaseException().Message ?? "Sticker processing failed");
+                            error?.Message ?? "Sticker processing failed");
                         ScheduleIdleMemoryTrim();
-                    });
+                    }, DispatcherPriority.Normal, "capture.sticker-result-failed-post"))
+                    {
+                        if (error is not null)
+                            AppDiagnostics.LogError("capture.sticker-result-failed", error);
+                        ResetCapturingWithoutUiRestore();
+                    }
                     return;
                 }
 
                 var persisted = task.Result;
-                Dispatcher.BeginInvoke(() =>
+                var action = NormalizeAfterCaptureAction(settings.AfterCapture);
+                var copyRequested = ShouldCopyAfterCapture(action);
+                var clipboardPayload = PrepareCaptureClipboardPayload(persisted.Output, persisted.FilePath, copyRequested, out var clipboardPrepareError);
+                if (!TryPostToAppDispatcher(() =>
                 {
-                    var action = NormalizeAfterCaptureAction(settings.AfterCapture);
-                    var copyRequested = ShouldCopyAfterCapture(action);
-                    var copySucceeded = copyRequested && TryCopyCaptureOutputToClipboard(persisted.Output);
+                    var copySucceeded = copyRequested && TryCopyCaptureOutputToClipboard(persisted.Output, persisted.FilePath, clipboardPayload, clipboardPrepareError);
                     ResetCapturing();
 
                     if (ShouldPreviewAfterCapture(action))
@@ -165,29 +162,26 @@ public partial class App
                     }
 
                     ScheduleIdleMemoryTrim();
-                });
+                }, DispatcherPriority.Normal, "capture.sticker-result-complete-post"))
+                {
+                    persisted.Output.Dispose();
+                    ResetCapturingWithoutUiRestore();
+                }
             }, TaskScheduler.Default);
     }
 
     private void HandleUpscaleResult(Bitmap result, string providerName)
     {
         var settings = _settingsService!.Settings;
-        string? requestedPath = null;
-        if (settings.SaveToFile)
+        if (!TryResolveCaptureOutputPath(
+                () => $"{Helpers.FileNameTemplate.Format(settings.FileNameTemplate, result.Width, result.Height)}_upscale.png",
+                CaptureImageFormat.Png,
+                "Upscale error",
+                "OddSnap could not prepare the upscale save path. Choose another save folder in Settings and try again.",
+                out var requestedPath))
         {
-            var defaultUpscalePath = Helpers.CaptureSavePath.BuildAvailablePath(
-                settings.SaveDirectory,
-                $"{Helpers.FileNameTemplate.Format(settings.FileNameTemplate, result.Width, result.Height)}_upscale.png",
-                settings.SaveInMonthlyFolders);
-            requestedPath = settings.AskForFileNameOnSave
-                ? ResolveSavePath(defaultUpscalePath, CaptureImageFormat.Png)
-                : defaultUpscalePath;
-            if (requestedPath is null)
-            {
-                result.Dispose();
-                ResetCapturing();
-                return;
-            }
+            result.Dispose();
+            return;
         }
 
         _ = PersistCaptureAsync(result, requestedPath, saveHistory: settings.SaveHistory, isSticker: false, providerName: providerName)
@@ -195,24 +189,31 @@ public partial class App
             {
                 if (task.IsFaulted)
                 {
-                    Dispatcher.BeginInvoke(() =>
+                    var error = task.Exception?.GetBaseException();
+                    if (!TryPostToAppDispatcher(() =>
                     {
                         ResetCapturing();
                         ShowCaptureProcessingFailed(
                             "Upscale error",
                             "OddSnap could not finish the upscale result. Try again, or check Settings -> Upscale.",
-                            task.Exception?.GetBaseException().Message ?? "Upscale processing failed");
+                            error?.Message ?? "Upscale processing failed");
                         ScheduleIdleMemoryTrim();
-                    });
+                    }, DispatcherPriority.Normal, "capture.upscale-result-failed-post"))
+                    {
+                        if (error is not null)
+                            AppDiagnostics.LogError("capture.upscale-result-failed", error);
+                        ResetCapturingWithoutUiRestore();
+                    }
                     return;
                 }
 
                 var persisted = task.Result;
-                Dispatcher.BeginInvoke(() =>
+                var action = NormalizeAfterCaptureAction(settings.AfterCapture);
+                var copyRequested = ShouldCopyAfterCapture(action);
+                var clipboardPayload = PrepareCaptureClipboardPayload(persisted.Output, persisted.FilePath, copyRequested, out var clipboardPrepareError);
+                if (!TryPostToAppDispatcher(() =>
                 {
-                    var action = NormalizeAfterCaptureAction(settings.AfterCapture);
-                    var copyRequested = ShouldCopyAfterCapture(action);
-                    var copySucceeded = copyRequested && TryCopyCaptureOutputToClipboard(persisted.Output);
+                    var copySucceeded = copyRequested && TryCopyCaptureOutputToClipboard(persisted.Output, persisted.FilePath, clipboardPayload, clipboardPrepareError);
                     ResetCapturing();
 
                     if (ShouldPreviewAfterCapture(action))
@@ -232,8 +233,70 @@ public partial class App
                     }
 
                     ScheduleIdleMemoryTrim();
-                });
+                }, DispatcherPriority.Normal, "capture.upscale-result-complete-post"))
+                {
+                    persisted.Output.Dispose();
+                    ResetCapturingWithoutUiRestore();
+                }
             }, TaskScheduler.Default);
+    }
+
+    private bool TryResolveCaptureOutputPath(
+        Func<string> fileNameFactory,
+        CaptureImageFormat format,
+        string errorTitle,
+        string errorRecovery,
+        out string? requestedPath)
+    {
+        requestedPath = null;
+        var settings = _settingsService!.Settings;
+        if (!settings.SaveToFile)
+            return true;
+
+        try
+        {
+            var defaultPath = Helpers.CaptureSavePath.BuildAvailablePath(
+                settings.SaveDirectory,
+                fileNameFactory(),
+                settings.SaveInMonthlyFolders);
+
+            if (settings.AskForFileNameOnSave)
+            {
+                // SaveFileDialog must run on the WPF dispatcher thread.
+                string? resolved = null;
+                if (Dispatcher.CheckAccess())
+                    resolved = ResolveSavePath(defaultPath, format);
+                else
+                    Dispatcher.Invoke(() => resolved = ResolveSavePath(defaultPath, format));
+                requestedPath = resolved;
+            }
+            else
+            {
+                requestedPath = defaultPath;
+            }
+
+            if (requestedPath is null)
+            {
+                ResetCapturing();
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            if (!TryPostToAppDispatcher(() =>
+            {
+                ResetCapturing();
+                ShowCaptureProcessingFailed(errorTitle, errorRecovery, ex.Message);
+                ScheduleIdleMemoryTrim();
+            }, DispatcherPriority.Normal, "capture.resolve-save-path-failed-post"))
+            {
+                AppDiagnostics.LogError("capture.resolve-save-path", ex);
+                ResetCapturingWithoutUiRestore();
+            }
+            return false;
+        }
     }
 
     private Task<PersistedCaptureResult> PersistCaptureAsync(
@@ -250,10 +313,20 @@ public partial class App
 
         return Task.Run(() =>
         {
-            using (source)
+            Bitmap? ownedSource = source;
+            Bitmap? output = null;
+            try
             {
-                var prepared = CaptureOutputService.PrepareBitmap(source, maxLongEdge);
-                var output = prepared;
+                if (maxLongEdge > 0 && Math.Max(ownedSource.Width, ownedSource.Height) > maxLongEdge)
+                {
+                    output = CaptureOutputService.PrepareBitmap(ownedSource, maxLongEdge);
+                }
+                else
+                {
+                    output = ownedSource;
+                    ownedSource = null;
+                }
+
                 string? filePath = requestedPath;
                 Services.HistoryEntry? historyEntry = null;
                 var historyService = saveHistory ? EnsureHistoryService() : null;
@@ -294,17 +367,38 @@ public partial class App
                 }
 
                 if (historyEntry is not null)
-                    SettingsWindow.WarmRecentHistoryThumbs(new[] { historyEntry }, maxCount: 1);
+                {
+                    try
+                    {
+                        SettingsWindow.WarmRecentHistoryThumbs(new[] { historyEntry }, maxCount: 1);
+                    }
+                    catch (Exception ex)
+                    {
+                        AppDiagnostics.LogWarning("capture.persist.warm-thumbnail", ex.Message, ex);
+                    }
+                }
 
-                return new PersistedCaptureResult
+                var result = new PersistedCaptureResult
                 {
                     Output = output,
                     FilePath = filePath,
                     HistoryEntry = historyEntry
                 };
+                output = null;
+                return result;
+            }
+            catch
+            {
+                output?.Dispose();
+                throw;
+            }
+            finally
+            {
+                ownedSource?.Dispose();
             }
         });
     }
+
 
     private static AfterCaptureAction NormalizeAfterCaptureAction(AfterCaptureAction action) =>
         Enum.IsDefined(typeof(AfterCaptureAction), action)
@@ -317,11 +411,48 @@ public partial class App
     private static bool ShouldPreviewAfterCapture(AfterCaptureAction action) =>
         action is AfterCaptureAction.PreviewAndCopy or AfterCaptureAction.PreviewOnly;
 
-    private static bool TryCopyCaptureOutputToClipboard(Bitmap output)
+    private static ClipboardService.ImageClipboardPayload? PrepareCaptureClipboardPayload(
+        Bitmap output,
+        string? filePath,
+        bool copyRequested,
+        out Exception? prepareError)
+    {
+        prepareError = null;
+        if (!copyRequested)
+            return null;
+
+        try
+        {
+            return ClipboardService.PrepareImageClipboardPayload(output, filePath);
+        }
+        catch (Exception ex)
+        {
+            prepareError = ex;
+            AppDiagnostics.LogWarning("capture.clipboard.prepare", $"Failed to prepare capture clipboard data: {ex.Message}", ex);
+            return null;
+        }
+    }
+
+    private static bool TryCopyCaptureOutputToClipboard(
+        Bitmap output,
+        string? filePath,
+        ClipboardService.ImageClipboardPayload? preparedPayload = null,
+        Exception? prepareError = null)
     {
         try
         {
-            ClipboardService.CopyToClipboard(output);
+            if (prepareError is not null)
+            {
+                throw new InvalidOperationException(
+                    "OddSnap could not prepare the image data for the clipboard. Try saving or dragging the preview instead.",
+                    prepareError);
+            }
+
+            if (preparedPayload is not null)
+                ClipboardService.CopyPreparedImageToClipboard(output, preparedPayload);
+            else
+                ClipboardService.CopyToClipboard(output, filePath);
+
             return true;
         }
         catch (Exception ex)
@@ -340,7 +471,7 @@ public partial class App
 
     private void HandleOcrResult(Bitmap result)
     {
-        Dispatcher.BeginInvoke(async () =>
+        if (!TryPostToAppDispatcherAsync(async () =>
         {
             try
             {
@@ -357,7 +488,7 @@ public partial class App
                     {
                         var copied = TryCopyCaptureTextToClipboard(text);
                         ToastWindow.Show(copied
-                            ? ToastSpec.Standard("OCR copied", FormatOcrAutoCopyToastPreview(text)) with { SuppressSound = true }
+                            ? ToastSpec.Standard("OCR copied", ToastSpec.CompactTextPreview(text)) with { SuppressSound = true }
                             : ToastSpec.Standard("OCR ready", "Clipboard copy failed."));
                         if (!copied)
                         {
@@ -385,12 +516,10 @@ public partial class App
             }
             finally { result.Dispose(); }
             ScheduleIdleMemoryTrim();
-        });
+        }, DispatcherPriority.Normal, "capture.ocr-post"))
+        {
+            result.Dispose();
+        }
     }
 
-    private static string FormatOcrAutoCopyToastPreview(string text)
-    {
-        var preview = string.Join(" ", text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-        return preview.Length > 80 ? preview[..80] + "..." : preview;
-    }
 }

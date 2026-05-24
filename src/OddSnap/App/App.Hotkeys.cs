@@ -52,12 +52,32 @@ public partial class App
 
         if (failed.Count > 0)
             ToastWindow.ShowError("Hotkey conflict", $"{string.Join(", ", failed)} — already in use by another app");
-        else
+        else if (!_readyToastShown)
         {
-            var name = HotkeyFormatter.Format(s.HotkeyModifiers, s.HotkeyKey);
-            ToastWindow.Show("OddSnap ready", $"{name} to capture, Alt+C for colors");
+            _readyToastShown = true;
+            ToastWindow.Show("OddSnap ready", BuildReadyToastDetail(s));
         }
     }
+
+    private static string BuildReadyToastDetail(AppSettings settings)
+    {
+        var captureHotkey = FormatConfiguredHotkey(settings.HotkeyModifiers, settings.HotkeyKey);
+        var pickerHotkey = FormatConfiguredHotkey(settings.PickerHotkeyModifiers, settings.PickerHotkeyKey);
+
+        if (captureHotkey is not null && pickerHotkey is not null)
+            return $"{captureHotkey} to capture, {pickerHotkey} for colors";
+
+        if (captureHotkey is not null)
+            return $"{captureHotkey} to capture. Right-click the tray icon for more tools.";
+
+        if (pickerHotkey is not null)
+            return $"{pickerHotkey} for colors. Left-click the tray icon to capture.";
+
+        return "Left-click the tray icon to capture; right-click it for tools.";
+    }
+
+    private static string? FormatConfiguredHotkey(uint modifiers, uint key) =>
+        key == 0 ? null : HotkeyFormatter.Format(modifiers, key);
 
     private void OnHotkeyPressed()
     {
@@ -145,6 +165,13 @@ public partial class App
 
     private void LaunchWithDelay(Action action)
     {
+        if (Volatile.Read(ref _isShuttingDown) != 0)
+        {
+            ResetCapturing();
+            return;
+        }
+
+        CancelCaptureDelay();
         int delay = _settingsService!.Settings.CaptureDelaySeconds;
         if (delay > 0)
         {
@@ -153,21 +180,64 @@ public partial class App
             var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             timer.Tick += (_, _) =>
             {
+                if (!ReferenceEquals(_captureDelayTimer, timer))
+                {
+                    timer.Stop();
+                    return;
+                }
+
+                if (Volatile.Read(ref _isShuttingDown) != 0)
+                {
+                    CancelCaptureDelay();
+                    ResetCapturing();
+                    return;
+                }
+
                 remaining--;
                 if (remaining > 0)
                     ToastWindow.Show($"Capturing in {remaining}...", "");
                 else
                 {
-                    timer.Stop();
+                    CancelCaptureDelay();
                     ToastWindow.DismissCurrent();
-                    action();
+                    RunDelayedCaptureAction(action);
                 }
             };
+            _captureDelayTimer = timer;
             timer.Start();
             return;
         }
 
-        action();
+        RunDelayedCaptureAction(action);
+    }
+
+    private void CancelCaptureDelay()
+    {
+        var timer = _captureDelayTimer;
+        _captureDelayTimer = null;
+        timer?.Stop();
+    }
+
+    private void RunDelayedCaptureAction(Action action)
+    {
+        if (Volatile.Read(ref _isShuttingDown) != 0)
+        {
+            ResetCapturing();
+            return;
+        }
+
+        try
+        {
+            action();
+        }
+        catch (Exception ex)
+        {
+            ResetCapturing();
+            ShowCaptureProcessingFailed(
+                "Capture error",
+                "OddSnap could not start the delayed capture. Try again, or choose another capture mode.",
+                ex.Message);
+        }
     }
 
     private static bool TrySwitchActiveOverlay(CaptureMode mode) =>

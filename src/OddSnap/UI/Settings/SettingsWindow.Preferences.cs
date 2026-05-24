@@ -8,10 +8,15 @@ namespace OddSnap.UI;
 
 public partial class SettingsWindow
 {
+    private const long MaxSettingsImportBytes = 2L * 1024 * 1024;
     private bool _suppressAutoIndexImagesChange;
+    private bool _settingsImportExportInProgress;
 
-    private void ExportSettingsButton_Click(object sender, RoutedEventArgs e)
+    private async void ExportSettingsButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_settingsImportExportInProgress)
+            return;
+
         try
         {
             var dlg = new Microsoft.Win32.SaveFileDialog
@@ -22,18 +27,31 @@ public partial class SettingsWindow
             if (dlg.ShowDialog(this) != true) return;
 
             var json = SettingsService.ExportRedactedJson(_settingsService.Settings);
-            File.WriteAllText(dlg.FileName, json);
+            var outputPath = dlg.FileName;
+            SetSettingsImportExportBusy(true);
+            await File.WriteAllTextAsync(outputPath, json);
+            if (_isClosed)
+                return;
+
             SetSettingsImportExportStatus($"Settings exported to {Path.GetFileName(dlg.FileName)}.");
             ToastWindow.Show("Settings exported", dlg.FileName);
         }
         catch (Exception ex)
         {
-            ShowSettingsExportFailed(ex);
+            if (!_isClosed)
+                ShowSettingsExportFailed(ex);
+        }
+        finally
+        {
+            SetSettingsImportExportBusy(false);
         }
     }
 
-    private void ImportSettingsButton_Click(object sender, RoutedEventArgs e)
+    private async void ImportSettingsButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_settingsImportExportInProgress)
+            return;
+
         AppSettings? previous = null;
         try
         {
@@ -43,7 +61,20 @@ public partial class SettingsWindow
             };
             if (dlg.ShowDialog(this) != true) return;
 
-            var json = File.ReadAllText(dlg.FileName);
+            var importPath = dlg.FileName;
+            var importInfo = new FileInfo(importPath);
+            if (importInfo.Length > MaxSettingsImportBytes)
+            {
+                SetSettingsImportExportStatus("Import failed: settings file is too large.");
+                ToastWindow.ShowError("Import failed", "That settings file is too large. Choose a normal OddSnap settings JSON file.");
+                return;
+            }
+
+            SetSettingsImportExportBusy(true);
+            var json = await File.ReadAllTextAsync(importPath);
+            if (_isClosed)
+                return;
+
             if (!SettingsService.TryDeserialize(json, out var imported))
             {
                 SetSettingsImportExportStatus("Import failed: invalid settings file.");
@@ -61,6 +92,9 @@ public partial class SettingsWindow
         }
         catch (Exception ex)
         {
+            if (_isClosed)
+                return;
+
             AppDiagnostics.LogError("settings.import", ex);
             if (previous is not null)
             {
@@ -79,6 +113,20 @@ public partial class SettingsWindow
 
             ShowSettingsImportFailed(previous is not null, ex);
         }
+        finally
+        {
+            SetSettingsImportExportBusy(false);
+        }
+    }
+
+    private void SetSettingsImportExportBusy(bool busy)
+    {
+        _settingsImportExportInProgress = busy;
+        if (_isClosed)
+            return;
+
+        ExportSettingsBtn.IsEnabled = !busy;
+        ImportSettingsBtn.IsEnabled = !busy;
     }
 
     private void ShowSettingsImportFailed(bool restoredPrevious, Exception ex)

@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Imaging;
 using System.IO;
 using System.Windows;
 using System.Windows.Input;
@@ -63,9 +62,20 @@ public partial class PreviewWindow
                 }
                 else if (_screenshot != null)
                 {
-                    tmpFile = Path.Combine(Path.GetTempPath(), $"oddsnap_{DateTime.Now:yyyyMMdd_HHmmss}.png");
-                    CaptureOutputService.SavePng(_screenshot, tmpFile);
-                    deleteTempFileAfterDrag = true;
+                    tmpFile = GetPreparedPreviewDragFilePath();
+                    if (tmpFile is null)
+                    {
+                        if (!ShouldSaveDragFileSynchronously(_screenshot))
+                        {
+                            ShowPreviewDragError("Preparing the preview file. Try dragging again in a moment.");
+                            base.OnMouseMove(e);
+                            return;
+                        }
+
+                        tmpFile = Path.Combine(Path.GetTempPath(), $"oddsnap_{DateTime.Now:yyyyMMdd_HHmmss}.png");
+                        CaptureOutputService.SavePng(_screenshot, tmpFile);
+                        deleteTempFileAfterDrag = true;
+                    }
                 }
                 else
                 {
@@ -94,7 +104,7 @@ public partial class PreviewWindow
 
                 var data = new DataObject();
                 data.SetFileDropList(new System.Collections.Specialized.StringCollection { tmpFile });
-                if (_screenshot != null)
+                if (_screenshot != null && ShouldIncludeInlineDragPng(_screenshot))
                 {
                     using var ms = new MemoryStream();
                     CaptureOutputService.WritePng(_screenshot, ms);
@@ -128,6 +138,122 @@ public partial class PreviewWindow
             }
         }
         base.OnMouseMove(e);
+    }
+
+    private string? GetPreparedPreviewDragFilePath()
+    {
+        if (!string.IsNullOrWhiteSpace(_dragTempFilePath) && File.Exists(_dragTempFilePath))
+            return _dragTempFilePath;
+
+        if (_dragTempFileTask?.IsCompletedSuccessfully == true)
+        {
+            var path = _dragTempFileTask.Result;
+            if (File.Exists(path))
+            {
+                _dragTempFilePath = path;
+                return path;
+            }
+        }
+
+        StartPreviewDragTempWarmup(force: true);
+        return null;
+    }
+
+    private void QueuePreviewDragTempWarmup()
+    {
+        if (_savedFilePath is not null || _screenshot is null)
+            return;
+
+        if (!ShouldWarmPreviewDragFileAutomatically(_screenshot))
+            return;
+
+        _ = TryPostToPreviewDispatcher(() => StartPreviewDragTempWarmup(force: false), DispatcherPriority.Background);
+    }
+
+    private void StartPreviewDragTempWarmup(bool force)
+    {
+        if (_dragTempFileTask is not null ||
+            _savedFilePath is not null ||
+            _screenshot is null ||
+            _isClosed)
+        {
+            return;
+        }
+
+        if (!force && !ShouldWarmPreviewDragFileAutomatically(_screenshot))
+            return;
+
+        Bitmap previewCopy;
+        try
+        {
+            previewCopy = new Bitmap(_screenshot);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogWarning("preview.drag-warmup.clone", $"Failed to prepare preview drag image: {ex.Message}", ex);
+            return;
+        }
+
+        var tempPath = Path.Combine(Path.GetTempPath(), $"oddsnap_drag_{Guid.NewGuid():N}.png");
+        _dragTempFileTask = Task.Run(() =>
+        {
+            using (previewCopy)
+            {
+                CaptureOutputService.SavePng(previewCopy, tempPath);
+            }
+
+            return tempPath;
+        });
+
+        _ = _dragTempFileTask.ContinueWith(task =>
+        {
+            if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            {
+                TryDeleteDragTempFile(tempPath, "preview.drag-warmup.shutdown");
+                return;
+            }
+
+            if (!TryPostToPreviewDispatcher(() =>
+            {
+                if (task.IsCompletedSuccessfully && !_isClosed)
+                {
+                    _dragTempFilePath = task.Result;
+                    return;
+                }
+
+                if (ReferenceEquals(_dragTempFileTask, task))
+                    _dragTempFileTask = null;
+
+                TryDeleteDragTempFile(tempPath, "preview.drag-warmup.cleanup");
+                if (task.Exception is not null)
+                    AppDiagnostics.LogWarning("preview.drag-warmup", $"Failed to prepare preview drag file: {task.Exception.GetBaseException().Message}", task.Exception.GetBaseException());
+            }))
+            {
+                TryDeleteDragTempFile(tempPath, "preview.drag-warmup.dispatcher-closed");
+            }
+        });
+    }
+
+    private static bool ShouldWarmPreviewDragFileAutomatically(Bitmap bitmap) =>
+        (long)bitmap.Width * bitmap.Height <= MaxAutomaticDragWarmupPixels;
+
+    private static bool ShouldIncludeInlineDragPng(Bitmap bitmap) =>
+        (long)bitmap.Width * bitmap.Height <= MaxInlineDragPngPixels;
+
+    private static bool ShouldSaveDragFileSynchronously(Bitmap bitmap) =>
+        (long)bitmap.Width * bitmap.Height <= MaxInlineDragPngPixels;
+
+    private static void TryDeleteDragTempFile(string path, string diagnosticKey)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogWarning(diagnosticKey, $"Failed to delete temporary drag file {Path.GetFileName(path)}: {ex.Message}", ex);
+        }
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
@@ -449,7 +575,7 @@ public partial class PreviewWindow
         }
     }
 
-    private void SavePreview()
+    private async void SavePreview()
     {
         if (_isSavingPreview || _isFading)
             return;
@@ -477,7 +603,14 @@ public partial class PreviewWindow
                         FileName = Path.GetFileName(_savedFilePath),
                         DefaultExt = ".gif"
                     };
-                    saveResult = RunPreviewSaveOperation(() => dlg.ShowDialog(this), () => File.Copy(_savedFilePath!, dlg.FileName!, true));
+                    saveResult = await RunPreviewSaveOperationAsync(
+                        () => dlg.ShowDialog(this),
+                        () =>
+                        {
+                            var sourcePath = _savedFilePath!;
+                            var outputPath = dlg.FileName!;
+                            return Task.Run(() => File.Copy(sourcePath, outputPath, true));
+                        });
                 }
             }
             else
@@ -490,14 +623,28 @@ public partial class PreviewWindow
                 };
                 saveResult = _screenshot is null
                     ? PreviewSaveOperationResult.Failed("No preview image is available to save.")
-                    : RunPreviewSaveOperation(() => dlg.ShowDialog(this), () =>
-                    {
-                        if (dlg.FileName.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase))
-                            _screenshot.Save(dlg.FileName, ImageFormat.Jpeg);
-                        else
-                            CaptureOutputService.SavePng(_screenshot, dlg.FileName);
-                    });
+                    : await RunPreviewSaveOperationAsync(
+                        () => dlg.ShowDialog(this),
+                        () =>
+                        {
+                            var outputPath = dlg.FileName!;
+                            var format = outputPath.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                                outputPath.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase)
+                                    ? Models.CaptureImageFormat.Jpeg
+                                    : Models.CaptureImageFormat.Png;
+                            var imageToSave = new Bitmap(_screenshot);
+                            return Task.Run(() =>
+                            {
+                                using (imageToSave)
+                                {
+                                    CaptureOutputService.SaveBitmap(imageToSave, outputPath, format, jpegQuality: 92);
+                                }
+                            });
+                        });
             }
+
+            if (_isClosed)
+                return;
 
             saved = saveResult.Saved;
             if (saved)
@@ -509,11 +656,14 @@ public partial class PreviewWindow
         }
         catch (Exception ex)
         {
+            if (_isClosed)
+                return;
+
             ShowPreviewSaveError(ex.Message);
         }
         finally
         {
-            if (!_isFading)
+            if (!_isClosed && !_isFading)
             {
                 _isSavingPreview = false;
                 SaveBtn.IsEnabled = true;
@@ -523,14 +673,16 @@ public partial class PreviewWindow
         }
     }
 
-    private static PreviewSaveOperationResult RunPreviewSaveOperation(Func<bool?> showDialog, Action saveAction)
+    private static async Task<PreviewSaveOperationResult> RunPreviewSaveOperationAsync(
+        Func<bool?> showDialog,
+        Func<Task> saveAction)
     {
         try
         {
             if (showDialog() != true)
                 return PreviewSaveOperationResult.Canceled;
 
-            saveAction();
+            await saveAction();
             return PreviewSaveOperationResult.Success;
         }
         catch (Exception ex)
@@ -607,10 +759,16 @@ public partial class PreviewWindow
 
     protected override void OnClosed(EventArgs e)
     {
+        _isClosed = true;
         CancelActivePreviewState();
         RunOnClosedCleanup("preview.closed.stop-timer", () => _fadeTimer.Stop());
         if (_current == this) _current = null;
         RunOnClosedCleanup("preview.closed.dispose-screenshot", () => _screenshot?.Dispose());
+        RunOnClosedCleanup("preview.closed.delete-drag-temp", () =>
+        {
+            if (!string.IsNullOrWhiteSpace(_dragTempFilePath))
+                TryDeleteDragTempFile(_dragTempFilePath, "preview.closed.delete-drag-temp");
+        });
         RunOnClosedCleanup("preview.closed.clear-thumbnail-source", () => ThumbnailImage.Source = null);
         base.OnClosed(e);
     }

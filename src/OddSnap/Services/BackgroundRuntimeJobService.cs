@@ -245,11 +245,7 @@ public static class BackgroundRuntimeJobService
 
     private static void DispatchToast(BackgroundRuntimeJobOptions options, bool success, string? errorMessage)
     {
-        var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher is null)
-            return;
-
-        _ = dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        _ = TryPostToUiDispatcher(() =>
         {
             if (success)
             {
@@ -259,7 +255,29 @@ public static class BackgroundRuntimeJobService
             {
                 ToastWindow.ShowError(options.FailureTitle, BuildRuntimeJobFailureToastBody(options, errorMessage));
             }
-        }));
+        }, "runtime-jobs.toast-post");
+    }
+
+    private static bool TryPostToUiDispatcher(Action action, string diagnosticKey)
+    {
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null ||
+            dispatcher.HasShutdownStarted ||
+            dispatcher.HasShutdownFinished)
+        {
+            return false;
+        }
+
+        try
+        {
+            _ = dispatcher.BeginInvoke(action, DispatcherPriority.Background);
+            return true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            AppDiagnostics.LogWarning(diagnosticKey, ex.Message, ex);
+            return false;
+        }
     }
 
     private static string BuildRuntimeJobFailureToastBody(BackgroundRuntimeJobOptions options, string? errorMessage)
@@ -441,17 +459,15 @@ public static class BackgroundRuntimeJobService
         if (_persistFailureToastShown)
             return;
 
-        _persistFailureToastShown = true;
-        var dispatcher = Application.Current?.Dispatcher;
-        if (dispatcher is null)
-            return;
-
-        _ = dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        if (TryPostToUiDispatcher(() =>
         {
             ToastWindow.ShowError(
                 "Runtime status not saved",
                 "Runtime setup can continue, but its status may not survive restart. Check Settings and retry if needed.");
-        }));
+        }, "runtime-jobs.persist-warning-post"))
+        {
+            _persistFailureToastShown = true;
+        }
     }
 
     private static void TryDeletePersistTempFile(string tempPath)

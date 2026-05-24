@@ -34,11 +34,27 @@ public sealed partial class RegionOverlayForm
         g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
         g.SmoothingMode = SmoothingMode.None;
 
-        // Blit the cached screenshot + committed annotations layer.
+        // Blit the screenshot plus committed annotations. Large multi-monitor
+        // captures skip the duplicate full-size cache and repaint annotations
+        // directly into the clipped paint region.
         var clip = e.ClipRectangle;
-        var committed = GetCommittedAnnotationsBitmap();
         g.CompositingMode = CompositingMode.SourceCopy;
-        g.DrawImage(committed, clip, clip, GraphicsUnit.Pixel);
+        if (ShouldCacheCommittedAnnotationsBitmap())
+        {
+            var committed = GetCommittedAnnotationsBitmap();
+            g.DrawImage(committed, clip, clip, GraphicsUnit.Pixel);
+        }
+        else
+        {
+            DisposeCommittedAnnotationsBitmap();
+            g.DrawImage(_screenshot, clip, clip, GraphicsUnit.Pixel);
+            if (_undoStack.Count > 0 || _renderSkipIndex >= 0)
+            {
+                g.CompositingMode = CompositingMode.SourceOver;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                RenderAnnotationsTo(g);
+            }
+        }
         g.CompositingMode = CompositingMode.SourceOver;
 
         bool isOcr = _mode == CaptureMode.Ocr;
@@ -369,7 +385,7 @@ public sealed partial class RegionOverlayForm
     }
 
     private static readonly Pen RulerShadowPen = new(Color.FromArgb(70, 0, 0, 0), 3f)
-        { StartCap = LineCap.Flat, EndCap = LineCap.Flat };
+    { StartCap = LineCap.Flat, EndCap = LineCap.Flat };
     private static Pen? _rulerLinePen;
     private static Pen? _rulerTickPen;
     private static SolidBrush? _rulerBgBrush;

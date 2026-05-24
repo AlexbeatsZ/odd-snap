@@ -61,10 +61,36 @@ public sealed partial class RegionOverlayForm
             _visibleTools = ToolDef.AllTools.Where(t => enabledIds.Contains(t.Id)).ToArray();
         }
 
+        RefreshToolHotkeyCache();
         _mainBarTools = _visibleTools.Where(t => !flyoutIds.Contains(t.Id)).ToArray();
         _flyoutTools = _visibleTools.Where(t => flyoutIds.Contains(t.Id)).ToArray();
         RefreshToolbar();
     }
+
+    private void RefreshToolHotkeyCache()
+    {
+        _toolHotkeysById.Clear();
+        _annotationHotkeysByChord.Clear();
+
+        var settings = Services.SettingsService.LoadStatic();
+        if (settings is null)
+            return;
+
+        foreach (var tool in _visibleTools)
+        {
+            var (mod, key) = settings.GetToolHotkey(tool.Id);
+            if (key == 0)
+                continue;
+
+            _toolHotkeysById[tool.Id] = (mod, key);
+
+            if (tool.Group == 1 && tool.Mode.HasValue)
+                _annotationHotkeysByChord.TryAdd((mod, key), tool);
+        }
+    }
+
+    private (uint Modifiers, uint Key) GetCachedToolHotkey(string toolId)
+        => _toolHotkeysById.TryGetValue(toolId, out var hotkey) ? hotkey : (0u, 0u);
 
     // All system fonts, cached once
     private static string[]? _allSystemFonts;
@@ -291,8 +317,7 @@ public sealed partial class RegionOverlayForm
         if (_windowDetectionMode == WindowDetectionMode.Off)
         {
             var previousDetect = _autoDetectRect;
-            _pendingAutoDetectPoint = Point.Empty;
-            _autoDetectTimer.Stop();
+            ResetAutoDetectUpdateQueue();
             _autoDetectRect = Rectangle.Empty;
             _autoDetectActive = false;
             InvalidateAutoDetectChrome(previousDetect, Rectangle.Empty);
@@ -300,8 +325,51 @@ public sealed partial class RegionOverlayForm
         }
 
         _pendingAutoDetectPoint = location;
-        _autoDetectTimer.Stop();
+
+        var now = Environment.TickCount64;
+        if (_lastAutoDetectFrameMs == 0 || now - _lastAutoDetectFrameMs >= UiChrome.FrameIntervalMs)
+        {
+            _autoDetectQueued = false;
+            _autoDetectTimer.Stop();
+            UpdateAutoDetectRect(location);
+            _lastAutoDetectFrameMs = now;
+            return;
+        }
+
+        _autoDetectQueued = true;
+        if (_autoDetectTimer.Enabled)
+            return;
+
+        var remaining = UiChrome.FrameIntervalMs - (int)Math.Min(int.MaxValue, now - _lastAutoDetectFrameMs);
+        _autoDetectTimer.Interval = Math.Max(1, remaining);
         _autoDetectTimer.Start();
+    }
+
+    private void FlushPendingAutoDetectRectUpdate()
+    {
+        _autoDetectTimer.Stop();
+        if (!_autoDetectQueued)
+            return;
+
+        _autoDetectQueued = false;
+        if (_isSelecting ||
+            !ToolDef.IsCaptureTool(_mode) ||
+            _mode == CaptureMode.Center ||
+            IsPointInOverlayUi(_pendingAutoDetectPoint))
+        {
+            return;
+        }
+
+        UpdateAutoDetectRect(_pendingAutoDetectPoint);
+        _lastAutoDetectFrameMs = Environment.TickCount64;
+    }
+
+    private void ResetAutoDetectUpdateQueue()
+    {
+        _autoDetectTimer.Stop();
+        _autoDetectQueued = false;
+        _pendingAutoDetectPoint = Point.Empty;
+        _lastAutoDetectFrameMs = 0;
     }
 
     private void UpdateAutoDetectRect(Point location)
@@ -317,7 +385,12 @@ public sealed partial class RegionOverlayForm
 
         if (!WindowDetector.TryGetSnapshotDetectionRectAtPoint(
                 location, _virtualBounds, _windowDetectionMode, out var detected))
-            return;
+        {
+            detected = WindowDetector.GetFastDetectionRectAtPoint(
+                location,
+                _virtualBounds,
+                _windowDetectionMode);
+        }
 
         var oldDetect = _autoDetectRect;
         _autoDetectRect = detected;
@@ -520,12 +593,20 @@ public sealed partial class RegionOverlayForm
         MarkCommittedAnnotationsDirty();
     }
 
+    private bool ShouldCacheCommittedAnnotationsBitmap()
+        => (long)_bmpW * _bmpH <= MaxCommittedAnnotationCachePixels;
+
+    private void DisposeCommittedAnnotationsBitmap()
+    {
+        _committedAnnotationsBitmap?.Dispose();
+        _committedAnnotationsBitmap = null;
+    }
+
     private Bitmap GetCommittedAnnotationsBitmap()
     {
         if (_undoStack.Count == 0 && _renderSkipIndex < 0)
         {
-            _committedAnnotationsBitmap?.Dispose();
-            _committedAnnotationsBitmap = null;
+            DisposeCommittedAnnotationsBitmap();
             _committedAnnotationsDirty = false;
             return _screenshot;
         }
@@ -533,18 +614,21 @@ public sealed partial class RegionOverlayForm
         if (!_committedAnnotationsDirty && _committedAnnotationsBitmap is not null)
             return _committedAnnotationsBitmap;
 
-        _committedAnnotationsBitmap?.Dispose();
-        var bitmap = new Bitmap(_bmpW, _bmpH, PixelFormat.Format32bppPArgb);
-        using (var g = Graphics.FromImage(bitmap))
-        {
-            g.CompositingMode = CompositingMode.SourceCopy;
-            g.DrawImageUnscaled(_screenshot, 0, 0);
-            g.CompositingMode = CompositingMode.SourceOver;
-            RenderAnnotationsTo(g);
-        }
-
+        DisposeCommittedAnnotationsBitmap();
+        var bitmap = CreateCommittedAnnotationsBitmap();
         _committedAnnotationsBitmap = bitmap;
         _committedAnnotationsDirty = false;
+        return bitmap;
+    }
+
+    private Bitmap CreateCommittedAnnotationsBitmap()
+    {
+        var bitmap = new Bitmap(_bmpW, _bmpH, PixelFormat.Format32bppPArgb);
+        using var g = Graphics.FromImage(bitmap);
+        g.CompositingMode = CompositingMode.SourceCopy;
+        g.DrawImageUnscaled(_screenshot, 0, 0);
+        g.CompositingMode = CompositingMode.SourceOver;
+        RenderAnnotationsTo(g);
         return bitmap;
     }
 }

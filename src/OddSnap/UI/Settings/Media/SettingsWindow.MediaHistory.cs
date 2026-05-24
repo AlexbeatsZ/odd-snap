@@ -4,6 +4,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using HorizontalAlignment = System.Windows.HorizontalAlignment;
 using VerticalAlignment = System.Windows.VerticalAlignment;
 using Image = System.Windows.Controls.Image;
@@ -19,10 +20,14 @@ public partial class SettingsWindow
 {
     private const string VideoThumbnailSeekOffset = "0.40";
     private const int VideoThumbnailDiagnosticMaxLength = 220;
+    private const int VideoThumbnailFfmpegTimeoutMs = 12_000;
+    private const int MaxFailedVideoThumbnailEntries = 256;
     private static readonly string[] VideoThumbnailSeekOffsets = ["0.40", "1.00", "2.00"];
     private static readonly SemaphoreSlim VideoThumbnailGate = new(2, 2);
     private static readonly object FailedVideoThumbnailGate = new();
     private static readonly Dictionary<string, (long Length, long LastWriteTicks)> FailedVideoThumbnailPaths = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly LinkedList<string> FailedVideoThumbnailOrder = new();
+    private static readonly Dictionary<string, LinkedListNode<string>> FailedVideoThumbnailNodes = new(StringComparer.OrdinalIgnoreCase);
 
     private void LoadMediaHistory()
     {
@@ -196,11 +201,11 @@ public partial class SettingsWindow
         AppendGroupedHistoryItems(GifStack, appended, CreateMediaCard);
         PrimeMediaThumbnailLoads(appended);
 
-        _ = Dispatcher.BeginInvoke(() =>
+        _ = TryPostToSettingsDispatcher(() =>
         {
-            if (IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 2)
+            if (!_isClosed && IsLoaded && HistoryTab.IsChecked == true && HistoryCategoryCombo.SelectedIndex == 2)
                 GifsPanel.ScrollToVerticalOffset(previousOffset);
-        }, System.Windows.Threading.DispatcherPriority.Background);
+        }, System.Windows.Threading.DispatcherPriority.Background, "settings.media-history-scroll-post");
         sw.Stop();
         AppDiagnostics.LogInfo(
             "history.append-media",
@@ -240,9 +245,7 @@ public partial class SettingsWindow
                     return;
                 }
 
-                var files = new System.Collections.Specialized.StringCollection();
-                files.Add(filePath);
-                System.Windows.Clipboard.SetFileDropList(files);
+                ClipboardService.CopyFilesToClipboard(filePath);
                 ToastWindow.Show("Copied", "GIF copied to clipboard");
             }
             catch (Exception ex)
@@ -308,9 +311,7 @@ public partial class SettingsWindow
                     return;
                 }
 
-                var files = new System.Collections.Specialized.StringCollection();
-                files.Add(filePath);
-                System.Windows.Clipboard.SetFileDropList(files);
+                ClipboardService.CopyFilesToClipboard(filePath);
                 ToastWindow.Show("Copied", "Video copied to clipboard");
             }
             catch (Exception ex)
@@ -335,7 +336,8 @@ public partial class SettingsWindow
 
         var playIcon = new Border
         {
-            Width = 36, Height = 36,
+            Width = 36,
+            Height = 36,
             CornerRadius = new CornerRadius(18),
             Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(160, 0, 0, 0)),
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -347,7 +349,8 @@ public partial class SettingsWindow
                 Data = System.Windows.Media.Geometry.Parse("M8,5 L8,19 L19,12 Z"),
                 Fill = System.Windows.Media.Brushes.White,
                 Stretch = System.Windows.Media.Stretch.Uniform,
-                Width = 14, Height = 14,
+                Width = 14,
+                Height = 14,
                 Margin = new Thickness(2, 0, 0, 0),
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -600,15 +603,60 @@ public partial class SettingsWindow
     {
         var signature = GetVideoThumbnailFailureSignature(videoPath);
         lock (FailedVideoThumbnailGate)
-            return FailedVideoThumbnailPaths.TryGetValue(videoPath, out var failedSignature) &&
-                   failedSignature == signature;
+        {
+            if (!FailedVideoThumbnailPaths.TryGetValue(videoPath, out var failedSignature))
+                return false;
+
+            if (failedSignature == signature)
+            {
+                TouchFailedVideoThumbnail_NoLock(videoPath);
+                return true;
+            }
+
+            RemoveFailedVideoThumbnail_NoLock(videoPath);
+            return false;
+        }
     }
 
     private static void RememberFailedVideoThumbnail(string videoPath)
     {
+        if (string.IsNullOrWhiteSpace(videoPath))
+            return;
+
         var signature = GetVideoThumbnailFailureSignature(videoPath);
         lock (FailedVideoThumbnailGate)
+        {
             FailedVideoThumbnailPaths[videoPath] = signature;
+            TouchFailedVideoThumbnail_NoLock(videoPath);
+            TrimFailedVideoThumbnailCache_NoLock();
+        }
+    }
+
+    private static void TouchFailedVideoThumbnail_NoLock(string videoPath)
+    {
+        if (FailedVideoThumbnailNodes.TryGetValue(videoPath, out var existing))
+            FailedVideoThumbnailOrder.Remove(existing);
+
+        FailedVideoThumbnailNodes[videoPath] = FailedVideoThumbnailOrder.AddFirst(videoPath);
+    }
+
+    private static void RemoveFailedVideoThumbnail_NoLock(string videoPath)
+    {
+        FailedVideoThumbnailPaths.Remove(videoPath);
+        if (FailedVideoThumbnailNodes.Remove(videoPath, out var node))
+            FailedVideoThumbnailOrder.Remove(node);
+    }
+
+    private static void TrimFailedVideoThumbnailCache_NoLock()
+    {
+        while (FailedVideoThumbnailOrder.Count > MaxFailedVideoThumbnailEntries)
+        {
+            var oldest = FailedVideoThumbnailOrder.Last;
+            if (oldest is null)
+                break;
+
+            RemoveFailedVideoThumbnail_NoLock(oldest.Value);
+        }
     }
 
     private static (long Length, long LastWriteTicks) GetVideoThumbnailFailureSignature(string videoPath)
@@ -638,30 +686,56 @@ public partial class SettingsWindow
         try
         {
             TryDeleteVideoThumbnailFile(thumbPath, "previous ffmpeg output");
-            using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            using var errorMode = WindowsErrorModeScope.SuppressSystemDialogs();
+            using var proc = new System.Diagnostics.Process
             {
-                FileName = ffmpeg,
-                Arguments = arguments,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardError = true,
-            });
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = ffmpeg,
+                    Arguments = arguments,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardError = true,
+                }
+            };
 
-            if (proc == null)
+            var stderr = new ThumbnailProcessOutputBuffer(VideoThumbnailDiagnosticMaxLength * 2);
+            proc.ErrorDataReceived += (_, e) =>
+            {
+                if (!string.IsNullOrWhiteSpace(e.Data))
+                    stderr.AppendLine(e.Data);
+            };
+
+            if (!proc.Start())
             {
                 AppDiagnostics.LogWarning("history.video-thumb", $"ffmpeg did not start for {Path.GetFileName(videoPath)}.");
                 return false;
             }
 
-            var stderrTask = proc.StandardError.ReadToEndAsync();
-            await proc.WaitForExitAsync();
-            var stderr = await stderrTask;
+            proc.BeginErrorReadLine();
+            using var timeout = new CancellationTokenSource(VideoThumbnailFfmpegTimeoutMs);
+            try
+            {
+                await proc.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+                try { proc.WaitForExit(500); } catch { }
+            }
+            catch (OperationCanceledException)
+            {
+                try { proc.Kill(entireProcessTree: true); } catch { }
+                try { proc.WaitForExit(2_000); } catch { }
+                TryDeleteVideoThumbnailFile(thumbPath, "timed out ffmpeg output");
+                AppDiagnostics.LogWarning(
+                    "history.video-thumb.ffmpeg",
+                    $"Timed out after {VideoThumbnailFfmpegTimeoutMs}ms while creating a thumbnail for {Path.GetFileName(videoPath)}.");
+                return false;
+            }
+
             var created = proc.ExitCode == 0 && IsUsableVideoThumbnail(thumbPath);
             if (!created)
             {
                 AppDiagnostics.LogWarning(
                     "history.video-thumb.ffmpeg",
-                    $"file={Path.GetFileName(videoPath)} exitCode={proc.ExitCode} stderr={TrimThumbnailDiagnostic(stderr)}");
+                    $"file={Path.GetFileName(videoPath)} exitCode={proc.ExitCode} stderr={TrimThumbnailDiagnostic(stderr.ToString())}");
             }
 
             return created;
@@ -698,6 +772,26 @@ public partial class SettingsWindow
         return normalized.Length <= VideoThumbnailDiagnosticMaxLength
             ? normalized
             : normalized[..VideoThumbnailDiagnosticMaxLength] + "...";
+    }
+
+    private sealed class ThumbnailProcessOutputBuffer(int maxChars)
+    {
+        private readonly int _maxChars = Math.Max(256, maxChars);
+        private readonly System.Text.StringBuilder _buffer = new();
+
+        public void AppendLine(string line)
+        {
+            if (_buffer.Length > 0)
+                _buffer.AppendLine();
+
+            _buffer.Append(line);
+            if (_buffer.Length <= _maxChars)
+                return;
+
+            _buffer.Remove(0, _buffer.Length - _maxChars);
+        }
+
+        public override string ToString() => _buffer.ToString();
     }
 
     private static bool IsUsableVideoThumbnail(string thumbPath) =>
@@ -795,9 +889,8 @@ public partial class SettingsWindow
                     if (sourcePath != null && ShouldCachePlaceholder(vm.Entry.Kind))
                     {
                         var placeholder = GetHistoryPlaceholder(vm.Entry.Kind);
-                        vm.ThumbnailSource = placeholder;
-                        vm.ThumbnailLoaded = true;
                         StoreThumbInCache(cacheKey, placeholder);
+                        PostThumbnailStateUpdate(vm, placeholder);
                         ApplyThumbnailToWaiters(cacheKey, placeholder, animate: false);
                     }
                     return;
@@ -815,9 +908,8 @@ public partial class SettingsWindow
                         bmp = GetHistoryPlaceholder(vm.Entry.Kind);
                     }
 
-                    vm.ThumbnailSource = bmp;
-                    vm.ThumbnailLoaded = true;
                     StoreThumbInCache(cacheKey, bmp);
+                    PostThumbnailStateUpdate(vm, bmp);
                     ApplyThumbnailToWaiters(cacheKey, bmp, animate: true);
                 }
                 finally
@@ -843,18 +935,18 @@ public partial class SettingsWindow
         if (TryGetThumbFromCache(cacheKey, out var cached) && cached is not null && !IsStaleHistoryPlaceholder(cached, kind))
         {
             if (onReady is not null)
-                onReady(cached);
+                InvokeThumbnailCallback(() => onReady(cached), "settings.thumbnail-ready-post");
             ApplyThumbnailToWaiters(cacheKey, cached, animate: false);
-            onLoaded?.Invoke();
+            InvokeThumbnailCallback(onLoaded, "settings.thumbnail-loaded-post");
             return;
         }
 
         if (TryLoadCachedThumbnailSource(cacheKey, thumbPath, cacheKey, kind, out var cachedDisk))
         {
             if (onReady is not null)
-                onReady(cachedDisk!);
+                InvokeThumbnailCallback(() => onReady(cachedDisk!), "settings.thumbnail-ready-post");
             ApplyThumbnailToWaiters(cacheKey, cachedDisk!, animate: false);
-            onLoaded?.Invoke();
+            InvokeThumbnailCallback(onLoaded, "settings.thumbnail-loaded-post");
             return;
         }
 
@@ -882,9 +974,10 @@ public partial class SettingsWindow
                         return;
 
                     StoreThumbInCache(cacheKey, bmp);
-                    onReady?.Invoke(bmp);
+                    if (onReady is not null)
+                        InvokeThumbnailCallback(() => onReady(bmp), "settings.thumbnail-ready-post");
                     ApplyThumbnailToWaiters(cacheKey, bmp, animate: false);
-                    onLoaded?.Invoke();
+                    InvokeThumbnailCallback(onLoaded, "settings.thumbnail-loaded-post");
                 }
                 finally
                 {
@@ -926,12 +1019,65 @@ public partial class SettingsWindow
             onLoaded);
     }
 
+    private static void PostThumbnailStateUpdate(HistoryItemVM vm, BitmapSource bitmap)
+    {
+        void Apply()
+        {
+            vm.ThumbnailSource = bitmap;
+            vm.ThumbnailLoaded = true;
+        }
+
+        var dispatcher = vm.ThumbnailImage?.Dispatcher ?? Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            Apply();
+            return;
+        }
+
+        if (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
+            return;
+
+        try
+        {
+            _ = dispatcher.BeginInvoke(new Action(Apply), DispatcherPriority.Background);
+        }
+        catch (InvalidOperationException ex)
+        {
+            AppDiagnostics.LogWarning("settings.thumbnail-state-post", ex.Message, ex);
+        }
+    }
+
+    private static void InvokeThumbnailCallback(Action? action, string diagnosticKey)
+    {
+        if (action is null)
+            return;
+
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            action();
+            return;
+        }
+
+        if (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
+            return;
+
+        try
+        {
+            _ = dispatcher.BeginInvoke(action, DispatcherPriority.Background);
+        }
+        catch (InvalidOperationException ex)
+        {
+            AppDiagnostics.LogWarning(diagnosticKey, ex.Message, ex);
+        }
+    }
+
     private static void ApplyThumbnailToBoundImage(HistoryItemVM vm, BitmapSource bitmap, bool animate)
     {
         if (vm.ThumbnailImage is not Image image)
             return;
 
-        _ = image.Dispatcher.BeginInvoke(() =>
+        _ = TryPostToImageDispatcher(image, () =>
         {
             image.Source = bitmap;
             image.Opacity = 1;
@@ -940,7 +1086,25 @@ public partial class SettingsWindow
                 image.BeginAnimation(OpacityProperty,
                     Motion.FromTo(0, 1, 170, Motion.SmoothOut));
             }
-        });
+        }, "settings.media-thumbnail-post");
+    }
+
+    private static bool TryPostToImageDispatcher(Image image, Action action, string diagnosticKey)
+    {
+        var dispatcher = image.Dispatcher;
+        if (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
+            return false;
+
+        try
+        {
+            _ = dispatcher.BeginInvoke(action, DispatcherPriority.Background);
+            return true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            AppDiagnostics.LogWarning(diagnosticKey, ex.Message, ex);
+            return false;
+        }
     }
 
     private static bool ShouldCachePlaceholder(HistoryKind kind) =>
@@ -954,7 +1118,7 @@ public partial class SettingsWindow
 
         foreach (var target in targets)
         {
-            _ = target.Dispatcher.BeginInvoke(() =>
+            _ = TryPostToImageDispatcher(target, () =>
             {
                 target.Source = bitmap;
                 target.Opacity = 1;
@@ -963,7 +1127,7 @@ public partial class SettingsWindow
                     target.BeginAnimation(OpacityProperty,
                         Motion.FromTo(0, 1, 170, Motion.SmoothOut));
                 }
-            });
+            }, "settings.media-thumbnail-waiter-post");
         }
     }
 }

@@ -469,6 +469,7 @@ public partial class SettingsWindow
         SetAiRedirectTestStatus("Testing AI redirect...");
 
         string? tempPath = null;
+        using var timeoutCts = BeginUploadTestTimeout(ref _aiRedirectTestCts);
         try
         {
             if (provider == Services.AiChatProvider.GoogleLens)
@@ -478,7 +479,10 @@ public partial class SettingsWindow
                     CaptureOutputService.SavePng(bmp, tempPath);
 
                 var hostDest = GetSelectedAiRedirectPanelUploadDest();
-                var uploadResult = await Services.UploadService.UploadAsync(tempPath, hostDest, ActiveUploadSettings);
+                var uploadResult = await Services.UploadService.UploadAsync(tempPath, hostDest, ActiveUploadSettings, timeoutCts.Token);
+                if (_isClosed)
+                    return;
+
                 if (uploadResult.Success && !string.IsNullOrWhiteSpace(uploadResult.Url))
                 {
                     var lensUrl = Services.UploadService.BuildGoogleLensUrl(uploadResult.Url);
@@ -491,7 +495,7 @@ public partial class SettingsWindow
                 else
                 {
                     var providerName = Services.UploadService.GetName(hostDest);
-                    var error = GetUploadResultError(uploadResult);
+                    var error = GetUploadResultError(uploadResult, timeoutCts);
                     SetAiRedirectTestStatus($"Google Lens upload failed: {providerName}: {error}");
                     ToastWindow.ShowError("Google Lens upload failed", BuildTestUploadFailureToastBody(providerName, error, uploadResult.IsRateLimit));
                 }
@@ -511,8 +515,21 @@ public partial class SettingsWindow
                 }
             }
         }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        {
+            if (_isClosed)
+                return;
+
+            var providerName = Services.UploadService.GetAiChatProviderName(provider);
+            var error = BuildUploadTestTimeoutMessage();
+            SetAiRedirectTestStatus($"{providerName} redirect test timed out.");
+            ToastWindow.ShowError($"{providerName} redirect test timed out", BuildAiRedirectTestFailureToastBody(providerName, error));
+        }
         catch (Exception ex)
         {
+            if (_isClosed)
+                return;
+
             AppDiagnostics.LogError("settings.ai-redirect-test", ex);
             var providerName = Services.UploadService.GetAiChatProviderName(provider);
             SetAiRedirectTestStatus($"{providerName} redirect test failed. Check Settings -> Uploads and try again.");
@@ -532,9 +549,13 @@ public partial class SettingsWindow
                 }
             }
 
+            ClearUploadTestTimeout(ref _aiRedirectTestCts, timeoutCts);
             _aiRedirectTestInProgress = false;
-            AiRedirectTestBtn.Content = "Test Redirect";
-            UpdateAiRedirectTestAvailability();
+            if (!_isClosed)
+            {
+                AiRedirectTestBtn.Content = "Test Redirect";
+                UpdateAiRedirectTestAvailability();
+            }
         }
     }
 
@@ -1113,6 +1134,7 @@ public partial class SettingsWindow
         SetTestUploadStatus("Uploading test image...");
 
         string tempPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "oddsnap_test.png");
+        using var timeoutCts = BeginUploadTestTimeout(ref _testUploadCts);
         try
         {
             using (var bmp = new Bitmap(1, 1))
@@ -1123,7 +1145,10 @@ public partial class SettingsWindow
                 if (ActiveUploadSettings.AiChatProvider == Services.AiChatProvider.GoogleLens)
                 {
                     var hostDest = Services.UploadService.NormalizeAiChatUploadDestination(ActiveUploadSettings.AiChatUploadDestination);
-                    var uploadResult = await Services.UploadService.UploadAsync(tempPath, hostDest, ActiveUploadSettings);
+                    var uploadResult = await Services.UploadService.UploadAsync(tempPath, hostDest, ActiveUploadSettings, timeoutCts.Token);
+                    if (_isClosed)
+                        return;
+
                     if (uploadResult.Success && !string.IsNullOrWhiteSpace(uploadResult.Url))
                     {
                         var lensUrl = Services.UploadService.BuildGoogleLensUrl(uploadResult.Url);
@@ -1136,7 +1161,7 @@ public partial class SettingsWindow
                     else
                     {
                         var providerName = Services.UploadService.GetName(hostDest);
-                        var error = GetUploadResultError(uploadResult);
+                        var error = GetUploadResultError(uploadResult, timeoutCts);
                         SetTestUploadStatus($"Google Lens upload failed: {providerName}: {error}");
                         ToastWindow.ShowError("Google Lens upload failed", BuildTestUploadFailureToastBody(providerName, error, uploadResult.IsRateLimit));
                     }
@@ -1160,7 +1185,10 @@ public partial class SettingsWindow
                 var result = await Services.UploadService.UploadAsync(
                     tempPath,
                     _settingsService.Settings.ImageUploadDestination,
-                    ActiveUploadSettings);
+                    ActiveUploadSettings,
+                    timeoutCts.Token);
+                if (_isClosed)
+                    return;
 
                 if (result.Success && !string.IsNullOrWhiteSpace(result.Url))
                 {
@@ -1172,14 +1200,26 @@ public partial class SettingsWindow
                     var providerName = string.IsNullOrWhiteSpace(result.ProviderName)
                         ? Services.UploadService.GetName(_settingsService.Settings.ImageUploadDestination)
                         : result.ProviderName;
-                    var error = GetUploadResultError(result);
+                    var error = GetUploadResultError(result, timeoutCts);
                     SetTestUploadStatus($"Upload failed: {providerName}: {error}");
                     ToastWindow.ShowError("Upload failed", BuildTestUploadFailureToastBody(providerName, error, result.IsRateLimit));
                 }
             }
         }
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+        {
+            if (_isClosed)
+                return;
+
+            var error = BuildUploadTestTimeoutMessage();
+            SetTestUploadStatus(error);
+            ToastWindow.ShowError("Test upload timed out", BuildTestUploadFailureToastBody(Services.UploadService.GetName(_settingsService.Settings.ImageUploadDestination), error, isRateLimit: false));
+        }
         catch (Exception ex)
         {
+            if (_isClosed)
+                return;
+
             AppDiagnostics.LogError("settings.test-upload", ex);
             SetTestUploadStatus("Test upload failed. Check upload settings and try another destination.");
             ToastWindow.ShowError(
@@ -1196,9 +1236,13 @@ public partial class SettingsWindow
             {
                 AppDiagnostics.LogWarning("settings.test-upload-temp-delete", $"Failed to delete test upload file {System.IO.Path.GetFileName(tempPath)}: {ex.Message}", ex);
             }
+            ClearUploadTestTimeout(ref _testUploadCts, timeoutCts);
             _testUploadInProgress = false;
-            TestUploadBtn.Content = "Test Upload";
-            UpdateTestUploadAvailability();
+            if (!_isClosed)
+            {
+                TestUploadBtn.Content = "Test Upload";
+                UpdateTestUploadAvailability();
+            }
         }
     }
 
@@ -1210,8 +1254,44 @@ public partial class SettingsWindow
             : Visibility.Visible;
     }
 
-    private static string GetUploadResultError(Services.UploadResult result)
-        => string.IsNullOrWhiteSpace(result.Error) ? "Upload returned no link." : result.Error;
+    private static string GetUploadResultError(Services.UploadResult result, CancellationTokenSource? timeoutCts = null)
+    {
+        if (timeoutCts?.IsCancellationRequested == true &&
+            string.Equals(result.Error, "Upload canceled.", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildUploadTestTimeoutMessage();
+        }
+
+        return string.IsNullOrWhiteSpace(result.Error) ? "Upload returned no link." : result.Error;
+    }
+
+    private static string BuildUploadTestTimeoutMessage()
+        => $"Timed out after {SettingsUploadTestTimeoutSeconds} seconds. Check your connection or try another upload destination.";
+
+    private static CancellationTokenSource BeginUploadTestTimeout(ref CancellationTokenSource? activeCts)
+    {
+        activeCts?.Cancel();
+        activeCts = new CancellationTokenSource(TimeSpan.FromSeconds(SettingsUploadTestTimeoutSeconds));
+        return activeCts;
+    }
+
+    private static void ClearUploadTestTimeout(ref CancellationTokenSource? activeCts, CancellationTokenSource completedCts)
+    {
+        if (ReferenceEquals(activeCts, completedCts))
+            activeCts = null;
+    }
+
+    private void CancelActiveUploadTests()
+    {
+        try
+        {
+            _testUploadCts?.Cancel();
+            _aiRedirectTestCts?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
 
     private static string BuildTestUploadFailureToastBody(string providerName, string error, bool isRateLimit)
     {

@@ -17,6 +17,8 @@ namespace OddSnap.UI;
 public partial class ToastWindow : Window
 {
     private const double RootCornerRadius = 10;
+    private const long MaxSynchronousDragPngPixels = 4_000_000;
+    private const int ToastGoogleLensUploadTimeoutSeconds = 25;
     private readonly DispatcherTimer _timer;
     private ToastSpec _spec;
     private bool _isDismissing;
@@ -31,8 +33,11 @@ public partial class ToastWindow : Window
     private int _toastStateVersion;
     private bool _closeAfterOpacityAnimation;
     private int _dismissAnimationToken;
+    private DispatcherTimer? _dismissCloseTimer;
     private bool _resumeDismissOnMouseLeave;
     private bool _entryStarted;
+    private EventHandler? _entryRenderingHandler;
+    private bool _isClosed;
 
     private static ToastWindow? _current;
     private static OddSnap.Models.ToastPosition _position = OddSnap.Models.ToastPosition.Right;
@@ -44,6 +49,8 @@ public partial class ToastWindow : Window
     private bool _isPinned;
     private string? _savedFilePath;
     private Bitmap? _previewBitmap;
+    private Task<string>? _dragTempFileTask;
+    private string? _dragTempFilePath;
     private bool _isDragging;
     private System.Windows.Point _mouseDownPos;
     private System.Windows.Media.Brush? _dragBorderBrush;
@@ -143,6 +150,26 @@ public partial class ToastWindow : Window
         SourceInitialized += (_, _) => PopupWindowHelper.ApplyNoActivateChrome(this);
         SizeChanged += (_, _) => UpdateRootClip();
         Loaded += OnLoaded;
+    }
+
+    private bool TryPostToToastDispatcher(
+        Action action,
+        DispatcherPriority priority = DispatcherPriority.Normal,
+        string diagnosticKey = "toast.dispatcher-post")
+    {
+        if (_isClosed || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            return false;
+
+        try
+        {
+            _ = Dispatcher.BeginInvoke(action, priority);
+            return true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            AppDiagnostics.LogWarning(diagnosticKey, ex.Message, ex);
+            return false;
+        }
     }
 
     private void ConfigureShell()
@@ -289,6 +316,8 @@ public partial class ToastWindow : Window
         {
             OuterShell.Background = System.Windows.Media.Brushes.Transparent;
         }
+
+        QueueToastDragTempWarmup();
 
         if (spec.IsError)
         {
@@ -678,7 +707,7 @@ public partial class ToastWindow : Window
 
     private void TogglePinned() => ApplyPinnedState(!_isPinned);
 
-    private void SavePreview()
+    private async void SavePreview()
     {
         if (_previewBitmap is null || _isSavingPreview)
             return;
@@ -714,11 +743,19 @@ public partial class ToastWindow : Window
 
             try
             {
-                CaptureOutputService.SaveBitmap(_previewBitmap, dlg.FileName, format, jpegQuality: 92);
+                var outputPath = dlg.FileName;
+                using var previewToSave = new Bitmap(_previewBitmap);
+                await Task.Run(() => CaptureOutputService.SaveBitmap(previewToSave, outputPath, format, jpegQuality: 92));
+                if (_isClosed)
+                    return;
+
                 Show(ToastSpec.Standard("Saved", Path.GetFileName(dlg.FileName)));
             }
             catch (Exception ex)
             {
+                if (_isClosed)
+                    return;
+
                 Show(ToastSpec.Error(
                     "Save failed",
                     BuildToastActionFailureBody("OddSnap could not save the preview. Choose another folder or check write permissions.", ex.Message),
@@ -727,9 +764,12 @@ public partial class ToastWindow : Window
         }
         finally
         {
-            _isSavingPreview = false;
-            SaveBtn.IsEnabled = true;
-            RefreshOverlayButtonAccessibility(SaveBtn, Helpers.ToastButtonKind.Save);
+            if (!_isClosed)
+            {
+                _isSavingPreview = false;
+                SaveBtn.IsEnabled = true;
+                RefreshOverlayButtonAccessibility(SaveBtn, Helpers.ToastButtonKind.Save);
+            }
         }
     }
 
@@ -900,7 +940,7 @@ public partial class ToastWindow : Window
         menu.Items.Add(item);
     }
 
-    private void OpenPreviewWithWindowsPicker()
+    private async void OpenPreviewWithWindowsPicker()
     {
         if (_previewBitmap is null || !TryBeginOfficeAction())
             return;
@@ -911,7 +951,15 @@ public partial class ToastWindow : Window
         string? openPath = null;
         try
         {
-            openPath = Services.OfficeExportService.EnsureOpenableFile(_previewBitmap, _savedFilePath, out isTemporary);
+            var prepared = await EnsurePreviewActionFileAsync("oddsnap_openwith");
+            openPath = prepared.Path;
+            isTemporary = prepared.IsTemporary;
+            if (_isClosed)
+            {
+                CleanupTemporaryOfficeActionFile(openPath, isTemporary, "toast.open-with-closed-delete");
+                return;
+            }
+
             if (TryOpenWithConfiguredApp(openPath, out var configuredAppName))
             {
                 if (isTemporary)
@@ -927,25 +975,19 @@ public partial class ToastWindow : Window
         }
         catch (Exception ex)
         {
-            if (isTemporary && !string.IsNullOrWhiteSpace(openPath) && File.Exists(openPath))
+            CleanupTemporaryOfficeActionFile(openPath, isTemporary, "toast.open-with-temp-delete");
+            if (!_isClosed)
             {
-                try
-                {
-                    File.Delete(openPath);
-                }
-                catch (Exception deleteEx)
-                {
-                    AppDiagnostics.LogWarning("toast.open-with-temp-delete", $"Failed to delete temporary Open With file {Path.GetFileName(openPath)}: {deleteEx.Message}", deleteEx);
-                }
+                Show(ToastSpec.Error(
+                    "Open with failed",
+                    BuildToastActionFailureBody("OddSnap could not open the image with another app. Save the capture or open it from History, then try Windows Open with.", ex.Message),
+                    GetExistingSavedFilePathOrNull()));
             }
-            Show(ToastSpec.Error(
-                "Open with failed",
-                BuildToastActionFailureBody("OddSnap could not open the image with another app. Save the capture or open it from History, then try Windows Open with.", ex.Message),
-                GetExistingSavedFilePathOrNull()));
         }
         finally
         {
-            EndOfficeAction(restoreAutoDismiss, remainingAutoDismissSeconds);
+            if (!_isClosed)
+                EndOfficeAction(restoreAutoDismiss, remainingAutoDismissSeconds);
         }
     }
 
@@ -982,28 +1024,80 @@ public partial class ToastWindow : Window
         menu.Items.Add(item);
     }
 
-    private void SendPreviewToOffice(Services.OfficeExportTarget target)
+    private async void SendPreviewToOffice(Services.OfficeExportTarget target)
     {
         if (_previewBitmap is null || !TryBeginOfficeAction())
             return;
 
         var restoreAutoDismiss = _restoreAutoDismissAfterOfficeAction;
         var remainingAutoDismissSeconds = _officeActionRemainingAutoDismissSeconds;
+        string? imagePath = null;
+        bool isTemporary = false;
         try
         {
-            Services.OfficeExportService.SendBitmap(_previewBitmap, _savedFilePath, target);
+            var prepared = await EnsurePreviewActionFileAsync("oddsnap_office");
+            imagePath = prepared.Path;
+            isTemporary = prepared.IsTemporary;
+            if (_isClosed)
+            {
+                CleanupTemporaryOfficeActionFile(imagePath, isTemporary, "toast.office-closed-delete");
+                return;
+            }
+
+            Services.OfficeExportService.SendFile(imagePath, target);
+            CleanupTemporaryOfficeActionFile(imagePath, isTemporary, "toast.office-temp-delete");
             Show(ToastSpec.Standard("Sent to Office", Services.OfficeExportService.GetTargetName(target), GetExistingSavedFilePathOrNull()) with { SuppressSound = true });
         }
         catch (Exception ex)
         {
-            Show(ToastSpec.Error(
-                "Office send failed",
-                BuildToastActionFailureBody("OddSnap could not send the image to Office. Save the capture and insert it manually, or try another Office target.", ex.Message),
-                GetExistingSavedFilePathOrNull()));
+            CleanupTemporaryOfficeActionFile(imagePath, isTemporary, "toast.office-temp-delete");
+            if (!_isClosed)
+            {
+                Show(ToastSpec.Error(
+                    "Office send failed",
+                    BuildToastActionFailureBody("OddSnap could not send the image to Office. Save the capture and insert it manually, or try another Office target.", ex.Message),
+                    GetExistingSavedFilePathOrNull()));
+            }
         }
         finally
         {
-            EndOfficeAction(restoreAutoDismiss, remainingAutoDismissSeconds);
+            if (!_isClosed)
+                EndOfficeAction(restoreAutoDismiss, remainingAutoDismissSeconds);
+        }
+    }
+
+    private async Task<(string Path, bool IsTemporary)> EnsurePreviewActionFileAsync(string tempPrefix)
+    {
+        if (HasSavedFileOnDisk())
+            return (_savedFilePath!, false);
+
+        if (_previewBitmap is null)
+            throw new InvalidOperationException("No preview image is available.");
+
+        var previewCopy = new Bitmap(_previewBitmap);
+        var tempPath = await Task.Run(() =>
+        {
+            using (previewCopy)
+            {
+                return CaptureOutputService.SaveBitmapToTempPng(previewCopy, tempPrefix);
+            }
+        });
+
+        return (tempPath, true);
+    }
+
+    private static void CleanupTemporaryOfficeActionFile(string? path, bool isTemporary, string diagnosticKey)
+    {
+        if (!isTemporary || string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            return;
+
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogWarning(diagnosticKey, $"Failed to delete temporary Office file {Path.GetFileName(path)}: {ex.Message}", ex);
         }
     }
 
@@ -1085,7 +1179,8 @@ public partial class ToastWindow : Window
                 }
 
                 var hostDest = UploadService.NormalizeAiChatUploadDestination(uploadSettings.AiChatUploadDestination);
-                var result = await UploadService.UploadAsync(savedFilePath, hostDest, uploadSettings);
+                using var uploadTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(ToastGoogleLensUploadTimeoutSeconds));
+                var result = await UploadService.UploadAsync(savedFilePath, hostDest, uploadSettings, uploadTimeout.Token);
                 if (!IsCurrentToastState(actionStateVersion))
                     return;
 
@@ -1093,7 +1188,7 @@ public partial class ToastWindow : Window
                 {
                     Show(ToastSpec.Error(
                         "Google Lens upload failed",
-                        BuildGoogleLensUploadFailureBody(UploadService.GetName(hostDest), result.Error, result.IsRateLimit),
+                        BuildGoogleLensUploadFailureBody(UploadService.GetName(hostDest), GetGoogleLensUploadActionError(result, uploadTimeout), result.IsRateLimit),
                         GetExistingSavedFilePathOrNull()));
                     return;
                 }
@@ -1165,6 +1260,17 @@ public partial class ToastWindow : Window
             : $"Check {providerLabel} settings or try another upload destination for Google Lens.";
 
         return $"{providerLabel}: {details}\n{recovery}";
+    }
+
+    private static string GetGoogleLensUploadActionError(UploadResult result, CancellationTokenSource uploadTimeout)
+    {
+        if (uploadTimeout.IsCancellationRequested &&
+            string.Equals(result.Error, "Upload canceled.", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Timed out after {ToastGoogleLensUploadTimeoutSeconds} seconds.";
+        }
+
+        return result.Error;
     }
 
     private static bool SavedFilePathStillExists(string filePath)
@@ -1440,7 +1546,10 @@ public partial class ToastWindow : Window
             if (feedback is not null)
                 GiveFeedback -= feedback;
 
-            if (_savedFilePath is null && !string.IsNullOrWhiteSpace(dragFile) && File.Exists(dragFile))
+            if (_savedFilePath is null &&
+                !string.IsNullOrWhiteSpace(dragFile) &&
+                !string.Equals(dragFile, _dragTempFilePath, StringComparison.OrdinalIgnoreCase) &&
+                File.Exists(dragFile))
             {
                 try
                 {
@@ -1607,10 +1716,117 @@ public partial class ToastWindow : Window
         if (_previewBitmap is null)
             return null;
 
+        var preparedPath = GetPreparedToastDragFilePath();
+        if (preparedPath is not null)
+            return preparedPath;
+
+        if (!ShouldSaveToastDragFileSynchronously(_previewBitmap))
+            throw new InvalidOperationException("Preparing the preview file. Try dragging again in a moment.");
+
         var temp = Path.Combine(Path.GetTempPath(), $"oddsnap_toast_{Guid.NewGuid():N}.png");
         CaptureOutputService.SavePng(_previewBitmap, temp);
         return temp;
     }
+
+    private string? GetPreparedToastDragFilePath()
+    {
+        if (!string.IsNullOrWhiteSpace(_dragTempFilePath) && File.Exists(_dragTempFilePath))
+            return _dragTempFilePath;
+
+        if (_dragTempFileTask?.IsCompletedSuccessfully == true)
+        {
+            var path = _dragTempFileTask.Result;
+            if (File.Exists(path))
+            {
+                _dragTempFilePath = path;
+                return path;
+            }
+        }
+
+        StartToastDragTempWarmup();
+        return null;
+    }
+
+    private void QueueToastDragTempWarmup()
+    {
+        if (_savedFilePath is not null || _previewBitmap is null)
+            return;
+
+        _ = TryPostToToastDispatcher(
+            StartToastDragTempWarmup,
+            DispatcherPriority.Background,
+            "toast.drag-warmup-post");
+    }
+
+    private void StartToastDragTempWarmup()
+    {
+        if (_dragTempFileTask is not null ||
+            _savedFilePath is not null ||
+            _previewBitmap is null ||
+            _isClosed)
+        {
+            return;
+        }
+
+        Bitmap previewCopy;
+        try
+        {
+            previewCopy = new Bitmap(_previewBitmap);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogWarning("toast.drag-warmup.clone", $"Failed to prepare toast drag image: {ex.Message}", ex);
+            return;
+        }
+
+        var tempPath = Path.Combine(Path.GetTempPath(), $"oddsnap_toast_drag_{Guid.NewGuid():N}.png");
+        _dragTempFileTask = Task.Run(() =>
+        {
+            using (previewCopy)
+            {
+                CaptureOutputService.SavePng(previewCopy, tempPath);
+            }
+
+            return tempPath;
+        });
+
+        _ = _dragTempFileTask.ContinueWith(task =>
+        {
+            if (!TryPostToToastDispatcher(() =>
+            {
+                if (task.IsCompletedSuccessfully && !_isClosed)
+                {
+                    _dragTempFilePath = task.Result;
+                    return;
+                }
+
+                TryDeleteToastDragTempFile(tempPath, "toast.drag-warmup.cleanup");
+                if (task.Exception is not null)
+                    AppDiagnostics.LogWarning("toast.drag-warmup", $"Failed to prepare toast drag file: {task.Exception.GetBaseException().Message}", task.Exception.GetBaseException());
+            }, DispatcherPriority.Background, "toast.drag-warmup-complete-post"))
+            {
+                TryDeleteToastDragTempFile(tempPath, "toast.drag-warmup.shutdown");
+                if (task.Exception is not null)
+                    AppDiagnostics.LogWarning("toast.drag-warmup", $"Failed to prepare toast drag file: {task.Exception.GetBaseException().Message}", task.Exception.GetBaseException());
+            }
+        });
+    }
+
+    private static void TryDeleteToastDragTempFile(string path, string diagnosticKey)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogWarning(diagnosticKey, $"Failed to delete temporary drag file {Path.GetFileName(path)}: {ex.Message}", ex);
+        }
+    }
+
+    private static bool ShouldSaveToastDragFileSynchronously(Bitmap bitmap) =>
+        (long)bitmap.Width * bitmap.Height <= MaxSynchronousDragPngPixels;
 
     private void ShowToastOpenError(string message)
     {
@@ -1673,14 +1889,15 @@ public partial class ToastWindow : Window
 
     private void QueueEntryAfterFirstComposedFrame()
     {
+        DetachEntryRenderingHandler();
         var entryToken = _toastStateVersion;
         EventHandler? rendered = null;
         rendered = (_, _) =>
         {
-            CompositionTarget.Rendering -= rendered;
-            Dispatcher.BeginInvoke(new Action(() =>
+            DetachEntryRenderingHandler(rendered);
+            _ = TryPostToToastDispatcher(() =>
             {
-                if (_entryStarted || _toastStateVersion != entryToken || !IsLoaded)
+                if (_isClosed || _entryStarted || _toastStateVersion != entryToken || !IsLoaded)
                     return;
 
                 _entryStarted = true;
@@ -1690,16 +1907,35 @@ public partial class ToastWindow : Window
 
                 if (!_isPinned)
                     RestartVisibleTimer(_durationSeconds);
-            }), DispatcherPriority.Render);
+            }, DispatcherPriority.Render, "toast.entry-frame-post");
         };
+        _entryRenderingHandler = rendered;
 
-        Dispatcher.BeginInvoke(new Action(() => CompositionTarget.Rendering += rendered), DispatcherPriority.Render);
+        _ = TryPostToToastDispatcher(() =>
+        {
+            if (!_isClosed && ReferenceEquals(_entryRenderingHandler, rendered))
+                CompositionTarget.Rendering += rendered;
+        }, DispatcherPriority.Render, "toast.entry-render-hook-post");
+    }
+
+    private void DetachEntryRenderingHandler(EventHandler? expectedHandler = null)
+    {
+        var handler = _entryRenderingHandler;
+        if (handler is null)
+            return;
+
+        if (expectedHandler is not null && !ReferenceEquals(handler, expectedHandler))
+            return;
+
+        _entryRenderingHandler = null;
+        CompositionTarget.Rendering -= handler;
     }
 
     private void CancelActiveToastState()
     {
         _toastStateVersion++;
         _entryStarted = false;
+        DetachEntryRenderingHandler();
         _timer.Stop();
         _isHovered = false;
         _isDragging = false;
@@ -1986,17 +2222,25 @@ public partial class ToastWindow : Window
                 return;
 
             if (_closeAfterOpacityAnimation)
-                Dispatcher.BeginInvoke(new Action(() => TryForceClose()));
+                _ = TryPostToToastDispatcher(
+                    () => TryForceClose(),
+                    DispatcherPriority.Background,
+                    "toast.dismiss-close-post");
         };
         BeginAnimation(OpacityProperty, opacityAnimation);
     }
 
     private void StartDismissCloseTimer(TimeSpan duration, int dismissToken)
     {
+        StopDismissCloseTimer();
+
         if (duration == TimeSpan.Zero)
         {
             if (dismissToken == _dismissAnimationToken && _closeAfterOpacityAnimation)
-                Dispatcher.BeginInvoke(new Action(() => TryForceClose()));
+                _ = TryPostToToastDispatcher(
+                    () => TryForceClose(),
+                    DispatcherPriority.Background,
+                    "toast.dismiss-zero-close-post");
             return;
         }
 
@@ -2004,15 +2248,30 @@ public partial class ToastWindow : Window
         closeTimer.Tick += (_, _) =>
         {
             closeTimer.Stop();
+            if (ReferenceEquals(_dismissCloseTimer, closeTimer))
+                _dismissCloseTimer = null;
+
             if (dismissToken == _dismissAnimationToken && _closeAfterOpacityAnimation)
-                Dispatcher.BeginInvoke(new Action(() => TryForceClose()));
+                _ = TryPostToToastDispatcher(
+                    () => TryForceClose(),
+                    DispatcherPriority.Background,
+                    "toast.dismiss-timer-close-post");
         };
+        _dismissCloseTimer = closeTimer;
         closeTimer.Start();
+    }
+
+    private void StopDismissCloseTimer()
+    {
+        var closeTimer = _dismissCloseTimer;
+        _dismissCloseTimer = null;
+        closeTimer?.Stop();
     }
 
     private void StopDismissAnimationTimer()
     {
         _dismissAnimationToken++;
+        StopDismissCloseTimer();
         BeginAnimation(OpacityProperty, null);
         BeginAnimation(LeftProperty, null);
         BeginAnimation(TopProperty, null);
@@ -2029,7 +2288,10 @@ public partial class ToastWindow : Window
         if (Dispatcher.CheckAccess())
             DismissAnimated();
         else
-            Dispatcher.BeginInvoke(DismissAnimated);
+            _ = TryPostToToastDispatcher(
+                DismissAnimated,
+                DispatcherPriority.Background,
+                "toast.request-dismiss-post");
     }
 
     private static double Lerp(double from, double to, double t) => from + ((to - from) * t);
@@ -2073,6 +2335,7 @@ public partial class ToastWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        _isClosed = true;
         RunOnClosedCleanup("toast.closed.stop-timer", () => _timer.Stop());
         RunOnClosedCleanup("toast.closed.stop-office-menu-timer", () => _officeMenuDismissTimer.Stop());
         RunOnClosedCleanup("toast.closed.close-office-menu", () =>
@@ -2081,7 +2344,13 @@ public partial class ToastWindow : Window
                 _officeMenu.IsOpen = false;
         });
         RunOnClosedCleanup("toast.closed.stop-dismiss-animation", StopDismissAnimationTimer);
+        RunOnClosedCleanup("toast.closed.detach-entry-rendering", () => DetachEntryRenderingHandler());
         if (_current == this) _current = null;
+        RunOnClosedCleanup("toast.closed.delete-drag-temp", () =>
+        {
+            if (!string.IsNullOrWhiteSpace(_dragTempFilePath))
+                TryDeleteToastDragTempFile(_dragTempFilePath, "toast.closed.delete-drag-temp");
+        });
         RunOnClosedCleanup("toast.closed.dispose-preview", () => _previewBitmap?.Dispose());
         _previewBitmap = null;
         RunOnClosedCleanup("toast.closed.clear-preview-source", () => PreviewImage.Source = null);

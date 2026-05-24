@@ -61,12 +61,18 @@ public sealed class TrayIcon : IDisposable
 
     public void UpdateSettings(AppSettings? settings)
     {
+        if (_disposed)
+            return;
+
         _settings = settings;
         RefreshLocalization();
     }
 
     public void UpdateRecordingState(bool isRecording)
     {
+        if (_disposed)
+            return;
+
         if (isRecording == _isShowingRecording) return;
         _isShowingRecording = isRecording;
         if (isRecording)
@@ -101,34 +107,34 @@ public sealed class TrayIcon : IDisposable
         var menu = WindowsMenuRenderer.Create(showImages: true, minWidth: WindowsMenuRenderer.DefaultWidth);
         bool isRec = Capture.RecordingForm.Current != null;
 
-        var captureItem  = WindowsMenuRenderer.Item(T("Screenshot"), HotkeyHint("rect"), "rect");
+        var captureItem = WindowsMenuRenderer.Item(T("Screenshot"), HotkeyHint("rect"), "rect");
         var fullscreenItem = WindowsMenuRenderer.Item(T("Full screen"), HotkeyHint("_fullscreen"), "fullscreen");
-        var ocrItem      = WindowsMenuRenderer.Item(T("Text capture"), HotkeyHint("ocr"), "ocr");
-        var pickerItem   = WindowsMenuRenderer.Item(T("Color picker"), HotkeyHint("picker"), "picker");
-        var recordItem   = isRec
+        var ocrItem = WindowsMenuRenderer.Item(T("Text capture"), HotkeyHint("ocr"), "ocr");
+        var pickerItem = WindowsMenuRenderer.Item(T("Color picker"), HotkeyHint("picker"), "picker");
+        var recordItem = isRec
             ? WindowsMenuRenderer.Item(T("Stop recording"), null, "record", active: true, danger: true)
             : WindowsMenuRenderer.Item(T("Record"), HotkeyHint("_record"), "record");
         _recordItem = recordItem;
-        var scrollItem   = WindowsMenuRenderer.Item(T("Scroll capture"), HotkeyHint("_scrollCapture"), "scrollCapture");
+        var scrollItem = WindowsMenuRenderer.Item(T("Scroll capture"), HotkeyHint("_scrollCapture"), "scrollCapture");
         var settingsItem = WindowsMenuRenderer.Item(T("Settings"), iconId: "gear");
-        var historyItem  = WindowsMenuRenderer.Item(T("History"), iconId: "folder");
-        var quitItem     = WindowsMenuRenderer.Item(T("Quit"), iconId: "close", danger: true);
+        var historyItem = WindowsMenuRenderer.Item(T("History"), iconId: "folder");
+        var quitItem = WindowsMenuRenderer.Item(T("Quit"), iconId: "close", danger: true);
 
         captureItem.Click += (_, _) => OnCapture?.Invoke();
         fullscreenItem.Click += (_, _) => OnFullScreenCapture?.Invoke();
-        ocrItem.Click     += (_, _) => OnOcr?.Invoke();
-        pickerItem.Click  += (_, _) => OnColorPicker?.Invoke();
-        recordItem.Click  += (_, _) =>
+        ocrItem.Click += (_, _) => OnOcr?.Invoke();
+        pickerItem.Click += (_, _) => OnColorPicker?.Invoke();
+        recordItem.Click += (_, _) =>
         {
             if (Capture.RecordingForm.Current != null)
                 Capture.RecordingForm.Current.RequestStop();
             else
                 OnGifRecord?.Invoke();
         };
-        scrollItem.Click   += (_, _) => OnScrollCapture?.Invoke();
+        scrollItem.Click += (_, _) => OnScrollCapture?.Invoke();
         settingsItem.Click += (_, _) => OnSettings?.Invoke();
-        historyItem.Click  += (_, _) => OnHistory?.Invoke();
-        quitItem.Click     += (_, _) => OnQuit?.Invoke();
+        historyItem.Click += (_, _) => OnHistory?.Invoke();
+        quitItem.Click += (_, _) => OnQuit?.Invoke();
 
         menu.Items.AddRange(new ToolStripItem[]
         {
@@ -404,9 +410,21 @@ public sealed class TrayIcon : IDisposable
             return;
 
         var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is not null && (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished))
+            return;
+
         if (dispatcher is not null && !dispatcher.CheckAccess())
         {
-            dispatcher.BeginInvoke(RefreshTrayIconTheme);
+            try
+            {
+                _ = dispatcher.BeginInvoke(
+                    new Action(RefreshTrayIconTheme),
+                    System.Windows.Threading.DispatcherPriority.Background);
+            }
+            catch (InvalidOperationException ex)
+            {
+                AppDiagnostics.LogWarning("tray.theme-refresh-post", ex.Message, ex);
+            }
             return;
         }
 
@@ -428,6 +446,9 @@ public sealed class TrayIcon : IDisposable
 
     public void Dispose()
     {
+        if (_disposed)
+            return;
+
         _disposed = true;
         SystemEvents.UserPreferenceChanged -= _themePreferenceHandler;
         _notifyIcon.Visible = false;

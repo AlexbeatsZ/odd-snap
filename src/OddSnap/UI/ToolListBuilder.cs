@@ -26,7 +26,6 @@ public static class ToolListBuilder
         ("_record",        "Record",              ToolGlyphs.RecordGlyph),
     };
 
-    private static readonly Dictionary<TextBox, bool> RecordingFlags = new();
     private static readonly HashSet<StackPanel> RestoringEnabledToolPanels = new();
 
     public static void Build(StackPanel panel, SettingsService settingsService, FrameworkElement owner, Action? hotkeyChanged = null)
@@ -203,11 +202,11 @@ public static class ToolListBuilder
         {
             if (card.Child is not Grid g) continue;
             foreach (var sp in g.Children.OfType<StackPanel>())
-            foreach (var cb in sp.Children.OfType<CheckBox>())
-            {
-                if (cb.Tag is string id && cb.IsChecked == true)
-                    enabledIds.Add(id);
-            }
+                foreach (var cb in sp.Children.OfType<CheckBox>())
+                {
+                    if (cb.Tag is string id && cb.IsChecked == true)
+                        enabledIds.Add(id);
+                }
         }
         if (!enabledIds.Any(id => ToolDef.AllTools.Any(t => t.Id == id && t.Group == 0)))
         {
@@ -255,11 +254,11 @@ public static class ToolListBuilder
             {
                 if (card.Child is not Grid g) continue;
                 foreach (var sp in g.Children.OfType<StackPanel>())
-                foreach (var cb in sp.Children.OfType<CheckBox>())
-                {
-                    if (cb.Tag is string id)
-                        cb.IsChecked = enabledIds.Contains(id);
-                }
+                    foreach (var cb in sp.Children.OfType<CheckBox>())
+                    {
+                        if (cb.Tag is string id)
+                            cb.IsChecked = enabledIds.Contains(id);
+                    }
             }
         }
         finally
@@ -274,10 +273,11 @@ public static class ToolListBuilder
     {
         var (mod0, key0) = svc.Settings.GetToolHotkey(toolId);
         box.Text = HotkeyFormatter.Format(mod0, key0);
+        bool isRecording = false;
 
         void StartRecording()
         {
-            RecordingFlags[box] = true;
+            isRecording = true;
             box.Text = LocalizationService.Translate("Press keys...");
         }
 
@@ -289,7 +289,7 @@ public static class ToolListBuilder
 
         void StopRecording()
         {
-            RecordingFlags[box] = false;
+            isRecording = false;
             Keyboard.ClearFocus();
         }
 
@@ -309,13 +309,13 @@ public static class ToolListBuilder
         };
         box.LostFocus += (_, _) =>
         {
-            RecordingFlags[box] = false;
+            isRecording = false;
             RestoreHotkeyText();
         };
-        box.Unloaded += (_, _) => RecordingFlags.Remove(box);
+        box.Unloaded += (_, _) => isRecording = false;
         void AcceptKey(Key rawKey)
         {
-            if (!RecordingFlags.GetValueOrDefault(box)) return;
+            if (!isRecording) return;
             if (rawKey == Key.Escape)
             {
                 RestoreHotkeyText();
@@ -393,14 +393,14 @@ public static class ToolListBuilder
 
         box.PreviewKeyDown += (_, e) =>
         {
-            if (!RecordingFlags.GetValueOrDefault(box)) return;
+            if (!isRecording) return;
             e.Handled = true;
             var key = NormalizeHotkeyKey(e);
             AcceptKey(key);
         };
         box.PreviewKeyUp += (_, e) =>
         {
-            if (!RecordingFlags.GetValueOrDefault(box)) return;
+            if (!isRecording) return;
             var key = NormalizeHotkeyKey(e);
             if (key is Key.Snapshot or Key.Pause or Key.Cancel)
             {

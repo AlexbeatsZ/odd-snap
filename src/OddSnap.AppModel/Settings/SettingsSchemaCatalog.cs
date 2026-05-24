@@ -71,7 +71,7 @@ public static class SettingsSchemaCatalog
                     "Primary recording output settings.",
                     [
                         new SettingDefinition("recording_format", "Recording format", SettingsValueKind.Choice, "Default recording container or GIF output.", "RecordingFormat"),
-                        new SettingDefinition("recording_quality", "Recording quality", SettingsValueKind.Choice, "Resolution and quality profile for recordings.", "RecordingQuality"),
+                        new SettingDefinition("recording_quality", "Recording resolution", SettingsValueKind.Choice, "Maximum resolution profile for recordings.", "RecordingQuality"),
                         new SettingDefinition("recording_fps", "Frame rate", SettingsValueKind.Number, "Target frames per second for new recordings.", "RecordingFps"),
                     ]),
                 new SettingsSectionDefinition(

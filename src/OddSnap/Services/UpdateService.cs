@@ -26,6 +26,7 @@ public static class UpdateService
 {
     private const string LatestReleaseApiUrl = "https://api.github.com/repos/jasperdevs/odd-snap/releases/latest";
     private const string ReleasesPageUrl = "https://github.com/jasperdevs/odd-snap/releases/latest";
+    private const long MaxLatestReleaseResponseBytes = 1L * 1024 * 1024;
     private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(15);
 
     private static readonly HttpClient Http = CreateHttpClient();
@@ -80,12 +81,13 @@ public static class UpdateService
             using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseApiUrl);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
 
-            using var response = await Http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
+            using var response = await SendLatestReleaseRequestAsync(request, cancellationToken).ConfigureAwait(false);
 
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            var release = await JsonSerializer.DeserializeAsync<GitHubRelease>(stream, cancellationToken: cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidOperationException("GitHub returned an empty release response.");
+            var payload = await HttpContentReader.ReadLimitedBytesAsync(
+                response.Content,
+                MaxLatestReleaseResponseBytes,
+                cancellationToken).ConfigureAwait(false);
+            var release = ReadLatestRelease(payload);
 
             var latestVersion = ParseVersion(release.TagName);
             var latestLabel = string.IsNullOrWhiteSpace(release.TagName) ? $"v{latestVersion}" : release.TagName.Trim();
@@ -132,6 +134,53 @@ public static class UpdateService
             return null;
 
         return hash.ToUpperInvariant();
+    }
+
+    private static GitHubRelease ReadLatestRelease(byte[] payload)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<GitHubRelease>(payload)
+                ?? throw new InvalidOperationException("GitHub returned an empty release response.");
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException("GitHub returned an unreadable update response. Try again later or open GitHub Releases manually.", ex);
+        }
+    }
+
+    private static async Task<HttpResponseMessage> SendLatestReleaseRequestAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+                return response;
+
+            var statusCode = (int)response.StatusCode;
+            string detail = response.StatusCode switch
+            {
+                System.Net.HttpStatusCode.Forbidden => "GitHub refused the update check, likely because of a temporary rate limit.",
+                System.Net.HttpStatusCode.NotFound => "GitHub did not return a latest OddSnap release.",
+                System.Net.HttpStatusCode.ServiceUnavailable => "GitHub Releases is temporarily unavailable.",
+                System.Net.HttpStatusCode.GatewayTimeout => "GitHub Releases timed out.",
+                _ => $"GitHub returned HTTP {statusCode}."
+            };
+            response.Dispose();
+            throw new InvalidOperationException($"{detail} Try again later or open GitHub Releases manually.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            throw new InvalidOperationException("The update check timed out. Check your connection and try again.", ex);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw new InvalidOperationException("OddSnap could not reach GitHub Releases. Check your internet connection and try again.", ex);
+        }
     }
 
     private static HttpClient CreateHttpClient()

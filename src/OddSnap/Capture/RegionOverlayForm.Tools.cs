@@ -33,6 +33,12 @@ public sealed partial class RegionOverlayForm
     /// </summary>
     public Bitmap RenderAnnotatedBitmap()
     {
+        if (_undoStack.Count == 0 && _renderSkipIndex < 0)
+            return new Bitmap(_screenshot);
+
+        if (!ShouldCacheCommittedAnnotationsBitmap())
+            return CreateCommittedAnnotationsBitmap();
+
         return new Bitmap(GetCommittedAnnotationsBitmap());
     }
 

@@ -29,7 +29,7 @@ public partial class App
         bool acquired;
         try
         {
-            acquired = _mutex.WaitOne(TimeSpan.FromSeconds(8), false);
+            acquired = _mutex.WaitOne(TimeSpan.FromMilliseconds(250), false);
         }
         catch (AbandonedMutexException)
         {
@@ -38,6 +38,9 @@ public partial class App
 
         if (!acquired)
         {
+            SingleInstanceActivationService.TryActivateExisting(
+                SingleInstanceActivationRequest.OpenSettings,
+                TimeSpan.FromMilliseconds(800));
             base.OnStartup(e);
             Shutdown();
             return;
@@ -51,10 +54,13 @@ public partial class App
 
         _settingsService = new SettingsService();
         _settingsService.Load();
+        SingleInstanceActivationService.Start(HandleSingleInstanceActivation);
         _settingsService.SaveFailed += message =>
         {
-            _ = Dispatcher.BeginInvoke(() =>
-                ToastWindow.ShowError("Settings save failed", string.IsNullOrWhiteSpace(message) ? "OddSnap could not write settings." : message));
+            _ = TryPostToAppDispatcher(
+                () => ToastWindow.ShowError("Settings save failed", string.IsNullOrWhiteSpace(message) ? "OddSnap could not write settings." : message),
+                DispatcherPriority.Background,
+                "startup.settings-save-failed-post");
         };
         LocalizationService.ApplyCurrentCulture(_settingsService.Settings.InterfaceLanguage);
         BackgroundRuntimeJobService.Initialize();

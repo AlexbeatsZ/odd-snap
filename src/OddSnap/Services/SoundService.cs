@@ -21,6 +21,7 @@ public static class SoundService
     private static BlockingCollection<byte[]>? _playbackQueue;
     private static Thread? _playbackThread;
     private static int _suppressionDepth;
+    private static bool _shutdownRequested;
 
     public static bool Muted { get; set; }
     internal static bool IsPlaybackSuppressed => Muted || Volatile.Read(ref _suppressionDepth) > 0;
@@ -62,22 +63,30 @@ public static class SoundService
 
     private static void PlayAsync(byte[] wav)
     {
-        EnsurePlaybackWorker();
-        _playbackQueue?.TryAdd(wav);
+        var queue = EnsurePlaybackWorker();
+        if (queue is null || queue.IsAddingCompleted)
+            return;
+
+        try { queue.TryAdd(wav); }
+        catch (InvalidOperationException) { }
     }
 
-    private static void EnsurePlaybackWorker()
+    private static BlockingCollection<byte[]>? EnsurePlaybackWorker()
     {
         lock (PlaybackGate)
         {
+            if (_shutdownRequested)
+                return null;
+
             if (_playbackQueue is not null && _playbackThread?.IsAlive == true)
-                return;
+                return _playbackQueue;
 
             _playbackQueue?.Dispose();
             _playbackQueue = new BlockingCollection<byte[]>(MaxQueuedSounds);
+            var queue = _playbackQueue;
             _playbackThread = new Thread(() =>
             {
-                foreach (var queuedWav in _playbackQueue.GetConsumingEnumerable())
+                foreach (var queuedWav in queue.GetConsumingEnumerable())
                 {
                     try
                     {
@@ -95,7 +104,30 @@ public static class SoundService
                 Name = "OddSnapSoundPlayback"
             };
             _playbackThread.Start();
+            return queue;
         }
+    }
+
+    public static void Shutdown()
+    {
+        BlockingCollection<byte[]>? queue;
+        Thread? thread;
+        lock (PlaybackGate)
+        {
+            _shutdownRequested = true;
+            queue = _playbackQueue;
+            thread = _playbackThread;
+            _playbackQueue = null;
+            _playbackThread = null;
+        }
+
+        try { queue?.CompleteAdding(); } catch { }
+        if (thread is not null && thread != Thread.CurrentThread)
+        {
+            try { thread.Join(750); } catch { }
+        }
+
+        try { queue?.Dispose(); } catch { }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────

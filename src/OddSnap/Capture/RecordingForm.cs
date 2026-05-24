@@ -12,8 +12,8 @@ namespace OddSnap.Capture;
 
 /// <summary>
 /// Two-phase form: first shows fullscreen overlay for region selection,
-/// then stays fullscreen but transparent during recording to show the
-/// dashed border around the capture region plus a floating toolbar.
+/// then stays fullscreen but transparent during recording while a separate
+/// capture-excluded toolbar window provides recording controls.
 /// </summary>
 public sealed partial class RecordingForm : Form
 {
@@ -64,9 +64,8 @@ public sealed partial class RecordingForm : Form
 
     // Toolbar (recording phase) - positioned relative to form
     private Rectangle _toolbarRect;
-    private Rectangle _stopBtn;
-    private Rectangle _discardBtn;
-    private int _hoveredBtn = -1; // 0=stop, 1=discard
+    private RecordingToolbarForm? _recordingToolbarForm;
+    private RecordingBorderForm? _recordingBorderForm;
 
     // TransparencyKey color - any color that won't appear in UI
     private static readonly Color TransKey = Color.FromArgb(1, 2, 3);
@@ -75,8 +74,6 @@ public sealed partial class RecordingForm : Form
     private readonly Font _readoutFont = UiChrome.ChromeFont(9f, FontStyle.Bold);
     private readonly Font _hintFont = UiChrome.ChromeFont(UiChrome.ChromeHintSize);
     private readonly SolidBrush _hintBrush = new(UiChrome.SurfaceTextMuted);
-    private readonly Pen _borderPen = new(Color.FromArgb(200, 239, 68, 68), 2.0f) { DashStyle = DashStyle.Dash, DashPattern = new[] { 4f, 3f }, LineJoin = LineJoin.Miter };
-    private readonly SolidBrush _cornerBrush = new(Color.FromArgb(220, 239, 68, 68));
     private readonly SolidBrush _dotBrush = new(Color.FromArgb(240, 239, 68, 68));
     private readonly Pen _ringPen = new(Color.FromArgb(80, 239, 68, 68), 1.5f);
     private readonly Font _timeFont = UiChrome.ChromeFont(UiChrome.ChromeTitleSize, FontStyle.Bold);
@@ -205,10 +202,8 @@ public sealed partial class RecordingForm : Form
         }
         else if (_state == State.Recording && e.Button == MouseButtons.Left)
         {
-            if (_stopBtn.Contains(e.Location))
-                StopRecording();
-            else if (_discardBtn.Contains(e.Location))
-                DiscardRecording();
+            // Recording controls live in RecordingToolbarForm so they can be
+            // excluded from screen/GIF capture without excluding this full-screen surface.
         }
     }
 
@@ -230,12 +225,7 @@ public sealed partial class RecordingForm : Form
         }
         if (_state == State.Recording)
         {
-            int prev = _hoveredBtn;
-            _hoveredBtn = _stopBtn.Contains(e.Location) ? 0
-                        : _discardBtn.Contains(e.Location) ? 1
-                        : -1;
-            Cursor = _hoveredBtn >= 0 ? Cursors.Hand : Cursors.Default;
-            if (_hoveredBtn != prev) Invalidate(_toolbarRect);
+            Cursor = Cursors.Default;
         }
     }
 
@@ -318,6 +308,9 @@ public sealed partial class RecordingForm : Form
     private void PaintRecordingPhase(Graphics g)
     {
         g.Clear(TransKey);
+        if (_state == State.Recording)
+            return;
+
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.CompositingMode = CompositingMode.SourceOver;
         g.CompositingQuality = CompositingQuality.AssumeLinear;
@@ -325,37 +318,6 @@ public sealed partial class RecordingForm : Form
         g.PixelOffsetMode = PixelOffsetMode.None;
         g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-
-        var borderRect = Rectangle.Inflate(_recordRegion, 2, 2);
-        g.DrawRectangle(_borderPen, borderRect);
-
-        int cm = 6;
-        g.FillRectangle(_cornerBrush, borderRect.X - cm / 2, borderRect.Y - cm / 2, cm, cm);
-        g.FillRectangle(_cornerBrush, borderRect.Right - cm / 2, borderRect.Y - cm / 2, cm, cm);
-        g.FillRectangle(_cornerBrush, borderRect.X - cm / 2, borderRect.Bottom - cm / 2, cm, cm);
-        g.FillRectangle(_cornerBrush, borderRect.Right - cm / 2, borderRect.Bottom - cm / 2, cm, cm);
-
-        var tbRectF = new RectangleF(_toolbarRect.X, _toolbarRect.Y, _toolbarRect.Width, _toolbarRect.Height);
-        WindowsDockRenderer.PaintSurface(g, tbRectF);
-
-        var elapsed = _recorder?.Elapsed ?? _videoRecorder?.Elapsed ?? TimeSpan.Zero;
-
-        float dotX = _toolbarRect.X + 16;
-        float dotY = _toolbarRect.Y + _toolbarRect.Height / 2f - 5;
-        bool dotVisible = (int)(elapsed.TotalMilliseconds / 500) % 2 == 0;
-        if (dotVisible)
-            g.FillEllipse(_dotBrush, dotX, dotY, 10, 10);
-        g.DrawEllipse(_ringPen, dotX, dotY, 10, 10);
-
-        string time = $"{(int)elapsed.TotalMinutes:D2}:{elapsed.Seconds:D2}";
-        var timeRect = new RectangleF(dotX + 18, _toolbarRect.Y, _stopBtn.X - (dotX + 24), _toolbarRect.Height);
-        using (var timeFormat = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap })
-            g.DrawString(time, _timeFont, _timeBrush, timeRect, timeFormat);
-
-        DrawIconBtn(g, _stopBtn, "stopSquare", _hoveredBtn == 0,
-            UiChrome.SurfaceTextPrimary, active: false);
-        DrawIconBtn(g, _discardBtn, "close", _hoveredBtn == 1,
-            UiChrome.SurfaceTextPrimary, active: false);
 
         if (_state == State.Encoding)
         {
@@ -371,6 +333,57 @@ public sealed partial class RecordingForm : Form
             g.DrawString(encLabel, _encFont, _encTextBrush, encRect, encFormat);
         }
     }
+
+    internal void PaintRecordingToolbarTo(Graphics g, Rectangle bounds, int hoveredButton)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.CompositingMode = CompositingMode.SourceOver;
+        g.CompositingQuality = CompositingQuality.AssumeLinear;
+        g.InterpolationMode = InterpolationMode.NearestNeighbor;
+        g.PixelOffsetMode = PixelOffsetMode.None;
+        g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+
+        WindowsDockRenderer.PaintSurface(g, bounds);
+
+        var elapsed = _recorder?.Elapsed ?? _videoRecorder?.Elapsed ?? TimeSpan.Zero;
+
+        float dotX = bounds.X + 16;
+        float dotY = bounds.Y + bounds.Height / 2f - 5;
+        bool dotVisible = (int)(elapsed.TotalMilliseconds / 500) % 2 == 0;
+        if (dotVisible)
+            g.FillEllipse(_dotBrush, dotX, dotY, 10, 10);
+        g.DrawEllipse(_ringPen, dotX, dotY, 10, 10);
+
+        string time = $"{(int)elapsed.TotalMinutes:D2}:{elapsed.Seconds:D2}";
+        var stopButton = GetRecordingToolbarStopButton(bounds);
+        var discardButton = GetRecordingToolbarDiscardButton(bounds);
+        var timeRect = new RectangleF(dotX + 18, bounds.Y, stopButton.X - (dotX + 24), bounds.Height);
+        using (var timeFormat = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap })
+            g.DrawString(time, _timeFont, _timeBrush, timeRect, timeFormat);
+
+        DrawIconBtn(g, stopButton, "stopSquare", hoveredButton == 0,
+            UiChrome.SurfaceTextPrimary, active: false);
+        DrawIconBtn(g, discardButton, "close", hoveredButton == 1,
+            UiChrome.SurfaceTextPrimary, active: false);
+    }
+
+    internal static Rectangle GetRecordingToolbarDiscardButton(Rectangle toolbarBounds)
+    {
+        int btnY = toolbarBounds.Y + (toolbarBounds.Height - WindowsDockRenderer.IconButtonSize) / 2;
+        return new Rectangle(toolbarBounds.Right - WindowsDockRenderer.SurfacePadding - WindowsDockRenderer.IconButtonSize,
+            btnY, WindowsDockRenderer.IconButtonSize, WindowsDockRenderer.IconButtonSize);
+    }
+
+    internal static Rectangle GetRecordingToolbarStopButton(Rectangle toolbarBounds)
+    {
+        var discardButton = GetRecordingToolbarDiscardButton(toolbarBounds);
+        return new Rectangle(discardButton.X - WindowsDockRenderer.ButtonSpacing - WindowsDockRenderer.IconButtonSize,
+            discardButton.Y, WindowsDockRenderer.IconButtonSize, WindowsDockRenderer.IconButtonSize);
+    }
+
+    internal void RequestToolbarStop() => StopRecording();
+
+    internal void RequestToolbarDiscard() => DiscardRecording();
 
     private void DrawIconBtn(Graphics g, Rectangle rect, string iconId, bool hovered,
         Color iconColor, bool active)
@@ -458,10 +471,15 @@ public sealed partial class RecordingForm : Form
         if (disposing)
         {
             Current = null;
-            CaptureWindowExclusion.Unregister(Handle);
+            if (IsHandleCreated)
+                CaptureWindowExclusion.Unregister(Handle);
             _escapeHook?.Dispose();
             _escapeHook = null;
             _tickTimer?.Dispose();
+            _recordingToolbarForm?.Dispose();
+            _recordingToolbarForm = null;
+            _recordingBorderForm?.Dispose();
+            _recordingBorderForm = null;
             _recorder?.Dispose();
             _videoRecorder?.Dispose();
             _magHelper?.Dispose();
@@ -471,7 +489,6 @@ public sealed partial class RecordingForm : Form
             _screenshot = null;
             _readoutFont.Dispose();
             _hintFont.Dispose(); _hintBrush.Dispose();
-            _borderPen.Dispose(); _cornerBrush.Dispose();
             _dotBrush.Dispose(); _ringPen.Dispose(); _timeFont.Dispose();
             _timeBrush.Dispose(); _encFont.Dispose();
             _encTextBrush.Dispose(); _spinBrush.Dispose();

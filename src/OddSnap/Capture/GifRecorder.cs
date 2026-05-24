@@ -70,42 +70,49 @@ public sealed class GifRecorder : IDisposable
         var ct = _cts.Token;
         int index = 0;
 
-        if (_initialCaptureDelayMs > 0)
+        try
         {
-            try { Thread.Sleep(_initialCaptureDelayMs); }
-            catch (ThreadInterruptedException) { return; }
-        }
+            using var frameCapturer = ScreenCapture.CreateRecordingFrameCapturer(_region, _showCursor);
 
-        while (!ct.IsCancellationRequested)
-        {
-            // Auto-stop at max duration
-            if ((DateTime.UtcNow - _startTime).TotalMilliseconds >= _maxDurationMs)
-                break;
-
-            var sw = Stopwatch.StartNew();
-            try
+            if (_initialCaptureDelayMs > 0)
             {
-                var frame = ScreenCapture.CaptureRegionForRecording(_region, _showCursor);
-                if (_frameQueue.TryAdd((frame, index), 100, ct))
+                try { Thread.Sleep(_initialCaptureDelayMs); }
+                catch (ThreadInterruptedException) { return; }
+            }
+
+            while (!ct.IsCancellationRequested)
+            {
+                // Auto-stop at max duration
+                if ((DateTime.UtcNow - _startTime).TotalMilliseconds >= _maxDurationMs)
+                    break;
+
+                var sw = Stopwatch.StartNew();
+                try
                 {
-                    Interlocked.Increment(ref _frameCount);
-                    index++;
-                    frame = null!;
+                    var frame = frameCapturer.CaptureBitmap();
+                    if (_frameQueue.TryAdd((frame, index), 100, ct))
+                    {
+                        Interlocked.Increment(ref _frameCount);
+                        index++;
+                        frame = null!;
+                    }
+                    frame?.Dispose();
                 }
-                frame?.Dispose();
-            }
-            catch (OperationCanceledException) { break; }
-            catch { /* skip frame on capture error */ }
+                catch (OperationCanceledException) { break; }
+                catch { /* skip frame on capture error */ }
 
-            int sleep = delayMs - (int)sw.ElapsedMilliseconds;
-            if (sleep > 0)
-            {
-                try { Thread.Sleep(sleep); }
-                catch (ThreadInterruptedException) { break; }
+                int sleep = delayMs - (int)sw.ElapsedMilliseconds;
+                if (sleep > 0)
+                {
+                    try { Thread.Sleep(sleep); }
+                    catch (ThreadInterruptedException) { break; }
+                }
             }
         }
-
-        _frameQueue.CompleteAdding();
+        finally
+        {
+            try { _frameQueue.CompleteAdding(); } catch { }
+        }
     }
 
     private void WriteLoop()
@@ -346,11 +353,22 @@ public sealed class GifRecorder : IDisposable
         if (_disposed) return;
         _disposed = true;
         _cts.Cancel();
+        try { _frameQueue.CompleteAdding(); } catch { }
+        JoinThreadIfNotCurrent(_captureThread, 3_000);
+        JoinThreadIfNotCurrent(_writerThread, 3_000);
         while (_frameQueue.TryTake(out var pending))
             pending.frame.Dispose();
         _frameQueue.Dispose();
         _cts.Dispose();
         Cleanup();
+    }
+
+    private static void JoinThreadIfNotCurrent(Thread? thread, int timeoutMs)
+    {
+        if (thread is null || !thread.IsAlive || ReferenceEquals(thread, Thread.CurrentThread))
+            return;
+
+        try { thread.Join(timeoutMs); } catch { }
     }
 
     private static bool IsValidOutputFile(string path)

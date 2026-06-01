@@ -1,0 +1,11 @@
+bin/
+obj/
+publish/
+publish-small/
+publish-self-contained/
+dist/
+dist-small/
+*.user
+*.suo
+*.rsuser
+.vs/

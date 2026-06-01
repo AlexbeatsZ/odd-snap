@@ -9,6 +9,7 @@ internal sealed class HotkeyMessageWindow : NativeWindow, IDisposable
     private const int HotkeyId = 0x4C51;
     private const uint ModShift = 0x0004;
     private const uint ModWin = 0x0008;
+    private const uint ModNoRepeat = 0x4000;
     private const uint VkL = 0x4C;
 
     private bool _registered;
@@ -27,9 +28,11 @@ internal sealed class HotkeyMessageWindow : NativeWindow, IDisposable
             return;
         }
 
-        if (!NativeMethods.RegisterHotKey(Handle, HotkeyId, ModWin | ModShift, VkL))
+        if (!NativeMethods.RegisterHotKey(Handle, HotkeyId, ModWin | ModShift | ModNoRepeat, VkL))
         {
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "Failed to register Win+Shift+L.");
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                "Failed to register Win+Shift+L. Another app may already be using this hotkey.");
         }
 
         _registered = true;

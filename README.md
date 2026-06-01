@@ -1,8 +1,8 @@
 # LongSnapLite
 
-LongSnapLite is a minimal Windows long screenshot tool. It runs in the background, listens for `Win + Shift + L`, lets you select a screen rectangle, continuously captures that rectangle while you scroll manually, stitches overlapping frames, and saves one PNG when you confirm.
+LongSnapLite is a minimal Windows long screenshot tool. It runs in the background and only keeps one feature: capturing a selected scrolling region into a PNG.
 
-It intentionally does not include OCR, annotation, upload, recording, history, settings, or an editor.
+It does not include OCR, annotation, recording, upload, history, settings, or an editor.
 
 ## Build
 
@@ -14,25 +14,30 @@ dotnet build -c Debug -p:Platform=x64
 dotnet build -c Release -p:Platform=x64
 ```
 
+## Publish
+
+```powershell
+dotnet publish -c Release -r win-x64 -p:PublishSingleFile=true -p:SelfContained=true -p:PublishTrimmed=false
+```
+
 ## Run
 
 ```powershell
 dotnet run -c Release -p:Platform=x64
 ```
 
-The app has no main window. It creates a tray icon named `LongSnapLite`.
+The app has no main window. It creates a tray icon named `LongSnapLite`. Right-click the tray icon and choose `Exit` to quit.
 
 ## Capture
 
-1. Focus the window or document you want to capture.
+1. Start the app.
 2. Press `Win + Shift + L`.
 3. Drag a rectangle over the scrollable area.
-4. Release the mouse button.
-5. LongSnapLite shows a blue border around the selected area and a small `Confirm` / `Cancel` toolbar.
-6. Scroll the underlying page yourself until enough content has been captured.
-7. Click `Confirm` to save silently, or `Cancel` to discard.
+4. Scroll the page manually.
+5. Press `Win + Shift + L` again to save.
+6. Press `Esc` during selection or capture to cancel.
 
-Press `Esc` during selection or capture to cancel. The border does not intercept mouse wheel input, so the selected page remains scrollable.
+During capture, LongSnapLite shows only a thin white guide around the selected region. It does not show a Confirm/Cancel toolbar.
 
 ## Output
 
@@ -48,17 +53,15 @@ File name format:
 LongSnap_yyyyMMdd_HHmmss.png
 ```
 
-## Exit
-
-Right-click the tray icon and choose `Exit`. If the tray icon is not reachable, end the `LongSnapLite` process from Task Manager.
+Successful saves use a tray notification. Save failures show an error dialog.
 
 ## Known Limitations
 
 - This is desktop capture, not browser DOM full-page capture.
-- It works best when the selected rectangle contains mostly vertically scrolling static content.
+- It works best when the selected rectangle contains mostly vertical static content.
 - Highly animated pages, sticky headers, video, cursor hover effects, or virtualized lists can reduce overlap reliability.
-- If you scroll too far in one jump, there may not be enough overlap for stitching. Scroll in moderate increments.
-- The stitcher stops appending when the output reaches `50000` pixels high, then waits for confirm/cancel.
+- Scroll in moderate increments. If you jump too far, there may not be enough overlap to stitch reliably.
+- The stitcher stops when the output reaches `50000` pixels high and saves the current result.
 
 ## Third-Party Code
 

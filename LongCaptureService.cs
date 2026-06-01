@@ -3,69 +3,94 @@ using System.Runtime.InteropServices;
 
 namespace LongSnapLite;
 
-internal sealed class LongCaptureService
+internal sealed class LongCaptureService : IDisposable
 {
+    private const bool AutoScrollEnabled = false;
+    private const int AutoScrollNotches = 5;
     private const int MaxOutputHeight = 50_000;
-    private const int CaptureIntervalMs = 450;
+    private const int CaptureIntervalMs = 400;
+    private const int NoOverlapWarningThreshold = 6;
 
-    private bool _isCapturing;
+    private readonly NotifyIcon _notifyIcon;
+    private readonly object _sync = new();
 
-    public async Task StartCaptureAsync()
+    private CaptureState _state = CaptureState.Idle;
+    private TaskCompletionSource<CaptureStopReason>? _stopRequest;
+    private GuideOverlayForm? _guideOverlay;
+
+    public LongCaptureService(NotifyIcon notifyIcon)
     {
-        if (_isCapturing)
+        _notifyIcon = notifyIcon;
+    }
+
+    public Task ToggleCaptureAsync()
+    {
+        lock (_sync)
         {
-            return;
+            if (_state == CaptureState.Capturing && _stopRequest is not null)
+            {
+                _stopRequest.TrySetResult(CaptureStopReason.Save);
+                return Task.CompletedTask;
+            }
+
+            if (_state != CaptureState.Idle)
+            {
+                return Task.CompletedTask;
+            }
+
+            _state = CaptureState.Selecting;
         }
 
-        _isCapturing = true;
+        _ = RunCaptureAsync();
+        return Task.CompletedTask;
+    }
+
+    public void Dispose()
+    {
+        _stopRequest?.TrySetResult(CaptureStopReason.Cancel);
+        CloseGuideOverlay();
+    }
+
+    private async Task RunCaptureAsync()
+    {
         try
         {
-            using var overlay = new SelectionOverlayForm();
-            if (overlay.ShowDialog() != DialogResult.OK || overlay.SelectedRectangle is not { } selection)
+            using var selectionOverlay = new SelectionOverlayForm();
+            if (selectionOverlay.ShowDialog() != DialogResult.OK ||
+                selectionOverlay.SelectedRectangle is not { } selection)
             {
                 return;
             }
 
-            await Task.Delay(160);
+            await Task.Delay(120);
+
             using var stitcher = new Stitcher { MaxOutputHeight = MaxOutputHeight };
-
-            using (var first = ScreenCapture.CaptureRectangle(selection))
+            using (var firstFrame = ScreenCapture.CaptureRectangle(selection))
             {
-                stitcher.AppendFrame(first);
+                stitcher.AppendFrame(firstFrame);
             }
 
-            using var sessionOverlay = CaptureSessionOverlay.Show(selection);
-            var captureEnabled = true;
-            while (!sessionOverlay.Completion.IsCompleted)
+            _guideOverlay = new GuideOverlayForm(selection);
+            _guideOverlay.Show();
+
+            var stopRequest = new TaskCompletionSource<CaptureStopReason>();
+            lock (_sync)
             {
-                if (IsEscapePressed())
-                {
-                    sessionOverlay.Cancel();
-                    break;
-                }
-
-                await Task.Delay(CaptureIntervalMs);
-                if (sessionOverlay.Completion.IsCompleted || !captureEnabled)
-                {
-                    continue;
-                }
-
-                using var current = ScreenCapture.CaptureRectangle(selection);
-                var appendResult = stitcher.AppendFrame(current);
-                if (!appendResult.ShouldContinue || stitcher.Result?.Height >= MaxOutputHeight)
-                {
-                    captureEnabled = false;
-                }
+                _stopRequest = stopRequest;
+                _state = CaptureState.Capturing;
             }
 
-            var decision = await sessionOverlay.Completion;
+            var stopReason = await CaptureLoopAsync(selection, stitcher, stopRequest);
+            CloseGuideOverlay();
 
-            if (decision != CaptureSessionResult.Confirm || stitcher.Result is null)
+            if (stopReason != CaptureStopReason.Save || stitcher.Result is null)
             {
                 return;
             }
 
-            SaveResult(stitcher.Result);
+            SetState(CaptureState.Saving);
+            var savedPath = SaveResult(stitcher.Result);
+            ShowSavedNotification(savedPath);
         }
         catch (Exception ex)
         {
@@ -73,14 +98,117 @@ internal sealed class LongCaptureService
         }
         finally
         {
-            _isCapturing = false;
+            CloseGuideOverlay();
+            lock (_sync)
+            {
+                _stopRequest = null;
+                _state = CaptureState.Idle;
+            }
         }
+    }
+
+    private async Task<CaptureStopReason> CaptureLoopAsync(
+        Rectangle selection,
+        Stitcher stitcher,
+        TaskCompletionSource<CaptureStopReason> stopRequest)
+    {
+        var noReliableOverlapCount = 0;
+        var warnedAboutOverlap = false;
+
+        while (!stopRequest.Task.IsCompleted)
+        {
+            if (IsEscapePressed())
+            {
+                stopRequest.TrySetResult(CaptureStopReason.Cancel);
+                break;
+            }
+
+            if (IsAutoScrollEnabled())
+            {
+                ScrollController.SendWheelDownAt(selection.Center(), AutoScrollNotches);
+            }
+
+            await Task.Delay(CaptureIntervalMs);
+
+            if (stopRequest.Task.IsCompleted)
+            {
+                break;
+            }
+
+            using var currentFrame = ScreenCapture.CaptureRectangle(selection);
+            var appendResult = stitcher.AppendFrame(currentFrame);
+
+            switch (appendResult.Status)
+            {
+                case AppendFrameStatus.Appended:
+                case AppendFrameStatus.NoNewRows:
+                case AppendFrameStatus.Duplicate:
+                    noReliableOverlapCount = 0;
+                    break;
+                case AppendFrameStatus.NoReliableOverlap:
+                    noReliableOverlapCount++;
+                    if (!warnedAboutOverlap && noReliableOverlapCount >= NoOverlapWarningThreshold)
+                    {
+                        warnedAboutOverlap = true;
+                        ShowBalloonTip("LongSnapLite", "Stitching overlap is unreliable. Scroll back slightly or save the current result.");
+                    }
+
+                    break;
+                case AppendFrameStatus.MaxHeightReached:
+                    stopRequest.TrySetResult(CaptureStopReason.Save);
+                    break;
+                case AppendFrameStatus.Error:
+                    ShowBalloonTip("LongSnapLite", appendResult.Message);
+                    break;
+            }
+
+            if (stitcher.Result?.Height >= MaxOutputHeight)
+            {
+                stopRequest.TrySetResult(CaptureStopReason.Save);
+            }
+        }
+
+        return await stopRequest.Task;
+    }
+
+    private void ShowSavedNotification(string savedPath)
+    {
+        ShowBalloonTip("Long screenshot saved", savedPath);
+    }
+
+    private void ShowBalloonTip(string title, string message)
+    {
+        if (_notifyIcon.Visible)
+        {
+            _notifyIcon.ShowBalloonTip(3000, title, message, ToolTipIcon.Info);
+        }
+    }
+
+    private void SetState(CaptureState state)
+    {
+        lock (_sync)
+        {
+            _state = state;
+        }
+    }
+
+    private void CloseGuideOverlay()
+    {
+        if (_guideOverlay is null)
+        {
+            return;
+        }
+
+        _guideOverlay.Close();
+        _guideOverlay.Dispose();
+        _guideOverlay = null;
     }
 
     private static string SaveResult(Bitmap result)
     {
         var directory = @"C:\Users\Meta\Pictures\Screenshots";
         Directory.CreateDirectory(directory);
+
         var fileName = $"LongSnap_{DateTime.Now:yyyyMMdd_HHmmss}.png";
         var path = Path.Combine(directory, fileName);
         result.Save(path, ImageFormat.Png);
@@ -92,6 +220,33 @@ internal sealed class LongCaptureService
         return (NativeMethods.GetAsyncKeyState((int)Keys.Escape) & 0x8000) != 0;
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static bool IsAutoScrollEnabled()
+    {
+        return AutoScrollEnabled;
+    }
+}
+
+internal enum CaptureState
+{
+    Idle,
+    Selecting,
+    Capturing,
+    Saving
+}
+
+internal enum CaptureStopReason
+{
+    Save,
+    Cancel
+}
+
+internal static class RectangleExtensions
+{
+    public static Point Center(this Rectangle rectangle)
+    {
+        return new Point(rectangle.Left + rectangle.Width / 2, rectangle.Top + rectangle.Height / 2);
+    }
 }
 
 internal static partial class NativeMethods

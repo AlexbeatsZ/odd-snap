@@ -11,6 +11,8 @@ internal sealed class Stitcher : IDisposable
 {
     private const double DuplicateThreshold = 0.985;
     private const int MinimumNewContentPixels = 1;
+    private const int MinReliableMatchRows = 30;
+    private const bool EnableBestGuessFallback = false;
 
     private Bitmap? _result;
     private Bitmap? _previousFrame;
@@ -29,12 +31,13 @@ internal sealed class Stitcher : IDisposable
         {
             _result = Clone32Argb(normalizedCurrent);
             ReplacePreviousCapturedFrame(normalizedCurrent);
-            return AppendFrameResult.Appended(normalizedCurrent.Height, "first frame");
+            return AppendFrameResult.Appended(normalizedCurrent.Height, "First frame.");
         }
 
         if (_previousFrame is not null && AreFramesDuplicate(_previousFrame, normalizedCurrent))
         {
-            return AppendFrameResult.Skipped("duplicate frame");
+            ReplacePreviousCapturedFrame(normalizedCurrent);
+            return AppendFrameResult.Duplicate("Frame is nearly identical to the previous capture.");
         }
 
         var match = TryAppendScrollingFrame(
@@ -45,15 +48,27 @@ internal sealed class Stitcher : IDisposable
             _bestIgnoreBottomOffset,
             MaxOutputHeight);
 
-        if (!match.Success || match.Image is null)
+        if (!match.Success)
         {
-            return AppendFrameResult.Skipped("reliable overlap not found");
+            return AppendFrameResult.NoReliableOverlap("Reliable overlap was not found.");
+        }
+
+        if (match.MaxHeightReached && match.Image is null)
+        {
+            return AppendFrameResult.MaxHeightReached(0, "Maximum output height reached.");
         }
 
         if (match.NewContentHeight < MinimumNewContentPixels)
         {
-            match.Image.Dispose();
-            return AppendFrameResult.Skipped("no new rows");
+            ReplacePreviousCapturedFrame(normalizedCurrent);
+            return AppendFrameResult.NoNewRows("Overlap was found, but there are no new rows.");
+        }
+
+        if (match.Image is null)
+        {
+            return match.MaxHeightReached
+                ? AppendFrameResult.MaxHeightReached(0, "Maximum output height reached.")
+                : AppendFrameResult.Error("Stitching produced no output image.");
         }
 
         if (!match.UsedBestGuess)
@@ -67,8 +82,14 @@ internal sealed class Stitcher : IDisposable
         _result = match.Image;
         ReplacePreviousCapturedFrame(normalizedCurrent);
 
-        return AppendFrameResult.Appended(match.NewContentHeight,
-            match.UsedBestGuess ? "best guess overlap" : $"overlap {match.MatchCount} rows");
+        if (match.MaxHeightReached)
+        {
+            return AppendFrameResult.MaxHeightReached(match.NewContentHeight, "Maximum output height reached.");
+        }
+
+        return AppendFrameResult.Appended(
+            match.NewContentHeight,
+            match.UsedBestGuess ? "Best guess overlap." : $"Overlap {match.MatchCount} rows.");
     }
 
     private void ReplacePreviousCapturedFrame(Bitmap frame)
@@ -84,7 +105,8 @@ internal sealed class Stitcher : IDisposable
         int MatchCount,
         int MatchIndex,
         int IgnoreBottomOffset,
-        bool UsedBestGuess);
+        bool UsedBestGuess,
+        bool MaxHeightReached);
 
     private static ScrollAppendMatch TryAppendScrollingFrame(
         Bitmap result,
@@ -104,7 +126,7 @@ internal sealed class Stitcher : IDisposable
         var totalHeight = Math.Min(keepResultHeight + match.NewContentHeight, maxOutputHeight);
         if (totalHeight <= keepResultHeight)
         {
-            return match with { Success = false };
+            return match with { NewContentHeight = 0, MaxHeightReached = true };
         }
 
         var newResult = new Bitmap(result.Width, totalHeight, PixelFormat.Format32bppArgb);
@@ -126,7 +148,7 @@ internal sealed class Stitcher : IDisposable
             new Rectangle(0, match.MatchIndex + 1, currentImage.Width, drawHeight),
             GraphicsUnit.Pixel);
 
-        return match with { Image = newResult };
+        return match with { Image = newResult, MaxHeightReached = totalHeight >= maxOutputHeight };
     }
 
     private static ScrollAppendMatch TryFindScrollingAppend(
@@ -138,12 +160,13 @@ internal sealed class Stitcher : IDisposable
     {
         if (result.Width != currentImage.Width || result.Height <= 0 || currentImage.Height <= 0)
         {
-            return new ScrollAppendMatch(false, null, 0, 0, 0, 0, false);
+            return new ScrollAppendMatch(false, null, 0, 0, 0, 0, false, false);
         }
 
         var matchCount = 0;
         var matchIndex = 0;
         var matchLimit = Math.Max(1, currentImage.Height / 2);
+        var minReliableMatchRows = Math.Min(MinReliableMatchRows, Math.Max(1, currentImage.Height / 8));
         var ignoreSideOffset = Math.Max(50, currentImage.Width / 20);
         ignoreSideOffset = Math.Min(ignoreSideOffset, currentImage.Width / 3);
         var compareWidth = currentImage.Width - ignoreSideOffset * 2;
@@ -198,7 +221,7 @@ internal sealed class Stitcher : IDisposable
             var resultBottomY = result.Height - ignoreBottomOffset - 1;
             if (resultBottomY < 0)
             {
-                return new ScrollAppendMatch(false, null, 0, 0, 0, ignoreBottomOffset, false);
+                return new ScrollAppendMatch(false, null, 0, 0, 0, ignoreBottomOffset, false, false);
             }
 
             for (var currentY = currentImage.Height - 1; currentY >= 0 && matchCount < matchLimit; currentY--)
@@ -236,7 +259,7 @@ internal sealed class Stitcher : IDisposable
         }
 
         var usedBestGuess = false;
-        if (matchCount == 0 && bestMatchCount > 0)
+        if (EnableBestGuessFallback && matchCount == 0 && bestMatchCount >= minReliableMatchRows)
         {
             matchCount = bestMatchCount;
             matchIndex = bestMatchIndex;
@@ -244,18 +267,18 @@ internal sealed class Stitcher : IDisposable
             usedBestGuess = true;
         }
 
-        if (matchCount <= 0)
+        if (matchCount < minReliableMatchRows)
         {
-            return new ScrollAppendMatch(false, null, 0, 0, 0, ignoreBottomOffset, false);
+            return new ScrollAppendMatch(false, null, 0, matchCount, matchIndex, ignoreBottomOffset, usedBestGuess, false);
         }
 
         var newContentHeight = currentImage.Height - matchIndex - 1;
         if (newContentHeight <= 0)
         {
-            return new ScrollAppendMatch(false, null, 0, matchCount, matchIndex, ignoreBottomOffset, usedBestGuess);
+            return new ScrollAppendMatch(true, null, 0, matchCount, matchIndex, ignoreBottomOffset, usedBestGuess, false);
         }
 
-        return new ScrollAppendMatch(true, null, newContentHeight, matchCount, matchIndex, ignoreBottomOffset, usedBestGuess);
+        return new ScrollAppendMatch(true, null, newContentHeight, matchCount, matchIndex, ignoreBottomOffset, usedBestGuess, false);
     }
 
     private static unsafe bool RowsEqual(BitmapData aData, BitmapData bData, int aY, int bY, int x, int width)
@@ -408,11 +431,27 @@ internal sealed class Stitcher : IDisposable
     }
 }
 
-internal readonly record struct AppendFrameResult(bool ShouldContinue, int RowsAppended, string Reason)
+internal readonly record struct AppendFrameResult(AppendFrameStatus Status, int RowsAppended, string Message)
 {
-    public static AppendFrameResult Appended(int rows, string reason) => new(true, rows, reason);
+    public static AppendFrameResult Appended(int rows, string message) => new(AppendFrameStatus.Appended, rows, message);
 
-    public static AppendFrameResult Skipped(string reason) => new(true, 0, reason);
+    public static AppendFrameResult Duplicate(string message) => new(AppendFrameStatus.Duplicate, 0, message);
 
-    public static AppendFrameResult Stop(string reason) => new(false, 0, reason);
+    public static AppendFrameResult NoReliableOverlap(string message) => new(AppendFrameStatus.NoReliableOverlap, 0, message);
+
+    public static AppendFrameResult NoNewRows(string message) => new(AppendFrameStatus.NoNewRows, 0, message);
+
+    public static AppendFrameResult MaxHeightReached(int rows, string message) => new(AppendFrameStatus.MaxHeightReached, rows, message);
+
+    public static AppendFrameResult Error(string message) => new(AppendFrameStatus.Error, 0, message);
+}
+
+internal enum AppendFrameStatus
+{
+    Appended,
+    Duplicate,
+    NoReliableOverlap,
+    NoNewRows,
+    MaxHeightReached,
+    Error
 }

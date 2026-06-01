@@ -24,11 +24,6 @@ internal sealed class LongSnapApplicationContext : ApplicationContext
 
     public LongSnapApplicationContext()
     {
-        _captureService = new LongCaptureService();
-        _hotkeyWindow = new HotkeyMessageWindow();
-        _hotkeyWindow.HotkeyPressed += OnHotkeyPressed;
-        _hotkeyWindow.Register();
-
         var menu = new ContextMenuStrip();
         menu.Items.Add("Exit", null, (_, _) => ExitThread());
 
@@ -39,15 +34,21 @@ internal sealed class LongSnapApplicationContext : ApplicationContext
             ContextMenuStrip = menu,
             Visible = true
         };
+
+        _captureService = new LongCaptureService(_trayIcon);
+        _hotkeyWindow = new HotkeyMessageWindow();
+        _hotkeyWindow.HotkeyPressed += OnHotkeyPressed;
+        _hotkeyWindow.Register();
     }
 
     private async void OnHotkeyPressed(object? sender, EventArgs e)
     {
-        await _captureService.StartCaptureAsync();
+        await _captureService.ToggleCaptureAsync();
     }
 
     protected override void ExitThreadCore()
     {
+        _captureService.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         _hotkeyWindow.HotkeyPressed -= OnHotkeyPressed;

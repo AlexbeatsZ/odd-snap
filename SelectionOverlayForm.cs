@@ -103,8 +103,6 @@ internal sealed class SelectionOverlayForm : Form
         var rect = Normalize(_startScreenPoint, _currentScreenPoint);
         rect.Offset(-Bounds.X, -Bounds.Y);
         using var pen = new Pen(Color.White, 2);
-        using var brush = new SolidBrush(Color.FromArgb(80, Color.White));
-        e.Graphics.FillRectangle(brush, rect);
         e.Graphics.DrawRectangle(pen, rect);
     }
 

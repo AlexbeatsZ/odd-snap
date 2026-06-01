@@ -4,10 +4,13 @@ namespace LongSnapLite;
 
 internal sealed class GuideOverlayForm : Form
 {
-    private const int BorderThickness = 2;
+    private const int GuideThickness = 3;
     private const int WS_EX_TRANSPARENT = 0x00000020;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
     private const int WS_EX_NOACTIVATE = 0x08000000;
+
+    private static readonly Color TransparentColor = Color.Fuchsia;
+    private static readonly Color GuideColor = Color.FromArgb(210, 210, 210);
 
     private readonly Rectangle _selection;
 
@@ -16,14 +19,16 @@ internal sealed class GuideOverlayForm : Form
         _selection = selection;
 
         AutoScaleMode = AutoScaleMode.None;
-        BackColor = Color.White;
+        BackColor = TransparentColor;
         Bounds = SystemInformation.VirtualScreen;
+        DoubleBuffered = true;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
         TopMost = true;
+        TransparencyKey = TransparentColor;
 
-        Region = BuildBorderRegion(Bounds, selection);
+        Region = BuildGuideRegion(Bounds, selection);
     }
 
     protected override bool ShowWithoutActivation => true;
@@ -51,7 +56,47 @@ internal sealed class GuideOverlayForm : Form
             NativeMethods.SWP_NOACTIVATE);
     }
 
-    private static Region BuildBorderRegion(Rectangle overlayBounds, Rectangle selection)
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+
+        e.Graphics.SmoothingMode = SmoothingMode.None;
+        e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
+
+        var localSelection = _selection;
+        localSelection.Offset(-Bounds.X, -Bounds.Y);
+
+        using var pen = new Pen(GuideColor, 1)
+        {
+            DashStyle = DashStyle.Dot
+        };
+
+        DrawOutsideGuide(e.Graphics, pen, localSelection);
+    }
+
+    private static void DrawOutsideGuide(Graphics graphics, Pen pen, Rectangle selection)
+    {
+        var left = selection.Left;
+        var top = selection.Top;
+        var right = selection.Right - 1;
+        var bottom = selection.Bottom - 1;
+
+        if (top > 0)
+        {
+            graphics.DrawLine(pen, left, top - 1, right, top - 1);
+        }
+
+        graphics.DrawLine(pen, left, bottom + 1, right, bottom + 1);
+
+        if (left > 0)
+        {
+            graphics.DrawLine(pen, left - 1, top, left - 1, bottom);
+        }
+
+        graphics.DrawLine(pen, right + 1, top, right + 1, bottom);
+    }
+
+    private static Region BuildGuideRegion(Rectangle overlayBounds, Rectangle selection)
     {
         var region = new Region();
         region.MakeEmpty();
@@ -66,27 +111,27 @@ internal sealed class GuideOverlayForm : Form
 
     private static Rectangle OutsideTop(Rectangle screen, Rectangle selection)
     {
-        var y = Math.Max(screen.Top, selection.Top - BorderThickness);
+        var y = Math.Max(screen.Top, selection.Top - GuideThickness);
         var height = selection.Top - y;
         return new Rectangle(selection.Left, y, selection.Width, height);
     }
 
     private static Rectangle OutsideBottom(Rectangle screen, Rectangle selection)
     {
-        var height = Math.Min(BorderThickness, screen.Bottom - selection.Bottom);
+        var height = Math.Min(GuideThickness, screen.Bottom - selection.Bottom);
         return new Rectangle(selection.Left, selection.Bottom, selection.Width, height);
     }
 
     private static Rectangle OutsideLeft(Rectangle screen, Rectangle selection)
     {
-        var x = Math.Max(screen.Left, selection.Left - BorderThickness);
+        var x = Math.Max(screen.Left, selection.Left - GuideThickness);
         var width = selection.Left - x;
         return new Rectangle(x, selection.Top, width, selection.Height);
     }
 
     private static Rectangle OutsideRight(Rectangle screen, Rectangle selection)
     {
-        var width = Math.Min(BorderThickness, screen.Right - selection.Right);
+        var width = Math.Min(GuideThickness, screen.Right - selection.Right);
         return new Rectangle(selection.Right, selection.Top, width, selection.Height);
     }
 

@@ -5,6 +5,7 @@ publish-small/
 publish-self-contained/
 dist/
 dist-small/
+release-assets/
 *.user
 *.suo
 *.rsuser

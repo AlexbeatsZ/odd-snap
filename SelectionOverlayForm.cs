@@ -5,6 +5,7 @@ internal sealed class SelectionOverlayForm : Form
     private Point _startScreenPoint;
     private Point _currentScreenPoint;
     private bool _dragging;
+    private Rectangle _lastSelectionRectangle;
 
     public Rectangle? SelectedRectangle { get; private set; }
 
@@ -51,6 +52,7 @@ internal sealed class SelectionOverlayForm : Form
         _dragging = true;
         _startScreenPoint = Cursor.Position;
         _currentScreenPoint = _startScreenPoint;
+        _lastSelectionRectangle = Rectangle.Empty;
         Capture = true;
         Invalidate();
     }
@@ -62,8 +64,12 @@ internal sealed class SelectionOverlayForm : Form
             return;
         }
 
+        var oldRect = ToLocalInflated(_lastSelectionRectangle);
         _currentScreenPoint = Cursor.Position;
-        Invalidate();
+        _lastSelectionRectangle = Normalize(_startScreenPoint, _currentScreenPoint);
+
+        var newRect = ToLocalInflated(_lastSelectionRectangle);
+        Invalidate(Rectangle.Union(oldRect, newRect));
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
@@ -102,8 +108,7 @@ internal sealed class SelectionOverlayForm : Form
 
         var rect = Normalize(_startScreenPoint, _currentScreenPoint);
         rect.Offset(-Bounds.X, -Bounds.Y);
-        using var pen = new Pen(Color.White, 2);
-        e.Graphics.DrawRectangle(pen, rect);
+        GuidePainter.DrawOutsideGuide(e.Graphics, rect);
     }
 
     private static Rectangle Normalize(Point a, Point b)
@@ -111,5 +116,17 @@ internal sealed class SelectionOverlayForm : Form
         var x = Math.Min(a.X, b.X);
         var y = Math.Min(a.Y, b.Y);
         return new Rectangle(x, y, Math.Abs(a.X - b.X), Math.Abs(a.Y - b.Y));
+    }
+
+    private Rectangle ToLocalInflated(Rectangle rectangle)
+    {
+        if (rectangle.IsEmpty)
+        {
+            return Rectangle.Empty;
+        }
+
+        rectangle.Offset(-Bounds.X, -Bounds.Y);
+        rectangle.Inflate(GuidePainter.GuideThickness + 1, GuidePainter.GuideThickness + 1);
+        return rectangle;
     }
 }

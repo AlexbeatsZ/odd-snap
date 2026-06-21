@@ -32,7 +32,7 @@ internal sealed class LongCaptureService : IDisposable
         {
             if (_state == CaptureState.Capturing && _stopRequest is not null)
             {
-                _stopRequest.TrySetResult(CaptureStopReason.Save);
+                _stopRequest.TrySetResult(CaptureStopReason.Cancel);
                 return Task.CompletedTask;
             }
 
@@ -123,7 +123,7 @@ internal sealed class LongCaptureService : IDisposable
         {
             if (IsEscapePressed())
             {
-                stopRequest.TrySetResult(CaptureStopReason.Cancel);
+                stopRequest.TrySetResult(CaptureStopReason.Save);
                 break;
             }
 
@@ -242,13 +242,23 @@ internal sealed class LongCaptureService : IDisposable
     private static void CopyResultToClipboardWithRetry(Bitmap result)
     {
         Exception? lastError = null;
+        var pngBytes = EncodePng(result);
 
         for (var attempt = 0; attempt < ClipboardRetryCount; attempt++)
         {
             try
             {
+                using var pngStream = new MemoryStream(pngBytes);
                 using var clipboardBitmap = new Bitmap(result);
-                Clipboard.SetImage(clipboardBitmap);
+                var dataObject = new DataObject();
+
+                // Put lossless PNG data on the clipboard first. Apps that understand
+                // the PNG clipboard format can paste the original pixels instead of
+                // falling back to a lower-fidelity compatibility bitmap path.
+                dataObject.SetData("PNG", false, pngStream);
+                dataObject.SetImage(clipboardBitmap);
+
+                Clipboard.SetDataObject(dataObject, true);
                 return;
             }
             catch (ExternalException ex)
@@ -259,6 +269,13 @@ internal sealed class LongCaptureService : IDisposable
         }
 
         throw lastError ?? new InvalidOperationException("Clipboard is unavailable.");
+    }
+
+    private static byte[] EncodePng(Bitmap result)
+    {
+        using var stream = new MemoryStream();
+        result.Save(stream, ImageFormat.Png);
+        return stream.ToArray();
     }
 
     private static bool IsEscapePressed()

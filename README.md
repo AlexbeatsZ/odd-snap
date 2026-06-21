@@ -34,7 +34,7 @@ The app has no main window. It creates a tray icon named `LongSnapLite`. Right-c
 2. Press `Win + Shift + L`.
 3. Drag a rectangle over the scrollable area.
 4. Scroll the page manually.
-5. Press `Win + Shift + L` again to save.
+5. Press `Win + Shift + L` again to save and copy the result to the clipboard.
 6. Press `Esc` during selection or capture to cancel.
 
 During capture, LongSnapLite shows only a thin white guide around the selected region. It does not show a Confirm/Cancel toolbar.
@@ -54,6 +54,8 @@ LongSnap_yyyyMMdd_HHmmss.png
 ```
 
 Successful saves use a tray notification. Save failures show an error dialog.
+
+By default, the final stitched image is also copied to the Windows clipboard after it is saved. This is controlled by the `CopyResultToClipboard` constant in `LongCaptureService.cs`; there is no settings UI.
 
 ## Known Limitations
 

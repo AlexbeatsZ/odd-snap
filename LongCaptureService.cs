@@ -6,10 +6,13 @@ namespace LongSnapLite;
 internal sealed class LongCaptureService : IDisposable
 {
     private const bool AutoScrollEnabled = false;
+    private const bool CopyResultToClipboard = true;
     private const int AutoScrollNotches = 5;
     private const int MaxOutputHeight = 50_000;
     private const int CaptureIntervalMs = 400;
     private const int NoOverlapWarningThreshold = 6;
+    private const int ClipboardRetryCount = 5;
+    private const int ClipboardRetryDelayMs = 80;
 
     private readonly NotifyIcon _notifyIcon;
     private readonly object _sync = new();
@@ -90,7 +93,8 @@ internal sealed class LongCaptureService : IDisposable
 
             SetState(CaptureState.Saving);
             var savedPath = SaveResult(stitcher.Result);
-            ShowSavedNotification(savedPath);
+            var copiedToClipboard = CopyResultToClipboardIfEnabled(stitcher.Result);
+            ShowSavedNotification(savedPath, copiedToClipboard);
         }
         catch (Exception ex)
         {
@@ -171,9 +175,10 @@ internal sealed class LongCaptureService : IDisposable
         return await stopRequest.Task;
     }
 
-    private void ShowSavedNotification(string savedPath)
+    private void ShowSavedNotification(string savedPath, bool copiedToClipboard)
     {
-        ShowBalloonTip("Long screenshot saved", savedPath);
+        var message = copiedToClipboard ? $"{savedPath}{Environment.NewLine}Copied to clipboard." : savedPath;
+        ShowBalloonTip("Long screenshot saved", message);
     }
 
     private void ShowBalloonTip(string title, string message)
@@ -215,6 +220,47 @@ internal sealed class LongCaptureService : IDisposable
         return path;
     }
 
+    private bool CopyResultToClipboardIfEnabled(Bitmap result)
+    {
+        if (!IsCopyResultToClipboardEnabled())
+        {
+            return false;
+        }
+
+        try
+        {
+            CopyResultToClipboardWithRetry(result);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ShowBalloonTip("LongSnapLite", $"Saved, but clipboard copy failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static void CopyResultToClipboardWithRetry(Bitmap result)
+    {
+        Exception? lastError = null;
+
+        for (var attempt = 0; attempt < ClipboardRetryCount; attempt++)
+        {
+            try
+            {
+                using var clipboardBitmap = new Bitmap(result);
+                Clipboard.SetImage(clipboardBitmap);
+                return;
+            }
+            catch (ExternalException ex)
+            {
+                lastError = ex;
+                Thread.Sleep(ClipboardRetryDelayMs);
+            }
+        }
+
+        throw lastError ?? new InvalidOperationException("Clipboard is unavailable.");
+    }
+
     private static bool IsEscapePressed()
     {
         return (NativeMethods.GetAsyncKeyState((int)Keys.Escape) & 0x8000) != 0;
@@ -224,6 +270,12 @@ internal sealed class LongCaptureService : IDisposable
     private static bool IsAutoScrollEnabled()
     {
         return AutoScrollEnabled;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static bool IsCopyResultToClipboardEnabled()
+    {
+        return CopyResultToClipboard;
     }
 }
 
